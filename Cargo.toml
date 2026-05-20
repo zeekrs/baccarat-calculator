@@ -1,0 +1,16 @@
+[workspace]
+members = [
+  "crates/calculator",
+  "crates/types",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+version = "0.1.0"
+
+[workspace.dependencies]
+serde = "1.0.228"
+serde_json = "1.0.145"
