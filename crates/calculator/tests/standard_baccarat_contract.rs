@@ -16,8 +16,9 @@ mod standard_baccarat_golden;
 use source_standard_8_deck::SOURCE_STANDARD_8_DECK_BETS;
 use source_standard_8_deck_variants::SOURCE_STANDARD_8_DECK_VARIANTS;
 use standard_baccarat_golden::{
-    DEPLETED_SHOE_FIXTURE, PROBABILITY_ABS_TOLERANCE, PROBABILITY_SUM_ABS_TOLERANCE,
-    STANDARD_8_DECK_EV_GOLDEN, STANDARD_8_DECK_FIXTURE, STANDARD_8_DECK_GOLDEN,
+	DEPLETED_SHOE_FIXTURE, PROBABILITY_ABS_TOLERANCE, PROBABILITY_SUM_ABS_TOLERANCE,
+	STANDARD_8_DECK_BRANCH_GOLDEN, STANDARD_8_DECK_EV_GOLDEN, STANDARD_8_DECK_FIXTURE,
+	STANDARD_8_DECK_GOLDEN,
 };
 use std::collections::HashSet;
 
@@ -716,7 +717,53 @@ fn ev_batch_uses_default_odds_and_preserves_registry_order() {
     let player_dragon = ev_result_by_bet_type(&result, BetType::PlayerDragon);
     assert_eq!(player_dragon.odds, 1.0);
     assert!(player_dragon.win_probability > 0.0);
-    assert!(player_dragon.push_probability > 0.0);
+	assert!(player_dragon.push_probability > 0.0);
+}
+
+#[test]
+fn ev_batch_accepts_multiple_rebate_levels_for_same_bet() {
+	let specs = [
+		ev_config(
+			"player-zero-rebate",
+			BetType::Player,
+			1.0,
+			0.0,
+			EffectiveAmountMode::NonRefund,
+		),
+		ev_config(
+			"player-one-percent-rebate",
+			BetType::Player,
+			1.0,
+			0.01,
+			EffectiveAmountMode::NonRefund,
+		),
+		ev_config(
+			"player-two-percent-rebate",
+			BetType::Player,
+			1.0,
+			0.02,
+			EffectiveAmountMode::NonRefund,
+		),
+	];
+
+	let result = calculate_ev(&standard_cards(), &specs)
+		.expect("same bet type should support multiple rebate levels in one batch");
+
+	assert_eq!(result.len(), specs.len());
+	for (row, spec) in result.iter().zip(specs.iter()) {
+		assert_eq!(row.id, spec.id);
+		assert_eq!(row.bet_type, BetType::Player);
+		assert_ev_close(row.base_ev, STANDARD_8_DECK_EV_GOLDEN.player_default_base_ev);
+		assert_ev_close(
+			row.effective_probability,
+			STANDARD_8_DECK_EV_GOLDEN.player_non_refund_effective_probability,
+		);
+		assert_ev_close(
+			row.rebate_ev,
+			spec.rebate_rate * STANDARD_8_DECK_EV_GOLDEN.player_non_refund_effective_probability,
+		);
+		assert_ev_close(row.total_ev, row.base_ev + row.rebate_ev);
+	}
 }
 
 #[test]
@@ -1073,7 +1120,27 @@ fn ev_request_validation_accepts_zero_odds_and_rejects_invalid_odds() {
         )],
     )
     .expect_err("infinite odds should fail");
-    assert!(infinity_error.contains("invalid odds"));
+	assert!(infinity_error.contains("invalid odds"));
+}
+
+#[test]
+fn ev_rejects_aggregate_default_odds_without_selected_simple_or_mode_contract() {
+	let aggregate_odds = default_odds_table()
+		.get(calculator::BetId::Lucky6Aggregate)
+		.expect("Lucky6 should have aggregate default odds");
+	let spec = PerBetEvCalculationSpec {
+		id: String::from("lucky6-aggregate-default"),
+		bet_type: BetType::Lucky6,
+		mode: None,
+		odds: aggregate_odds,
+		rebate_rate: 0.0,
+		effective_mode: EffectiveAmountMode::TotalStake,
+	};
+
+	let error = calculate_ev(&standard_cards(), &[spec])
+		.expect_err("aggregate odds must not be silently flattened into one EV odds value");
+
+	assert!(error.contains("invalid odds"));
 }
 
 #[test]
@@ -1177,10 +1244,12 @@ fn probability_output_reports_monkey_outcome_contract() {
 
     assert!(monkey_probability > 0.0);
     assert!(no_monkey_probability > 0.0);
-    assert_probability_close(
-        monkey.probability,
-        monkey_probability + no_monkey_probability,
-    );
+	assert_probability_close(
+		monkey.probability,
+		monkey_probability + no_monkey_probability,
+	);
+	assert_probability_close(monkey_probability, STANDARD_8_DECK_BRANCH_GOLDEN.monkey);
+	assert_probability_close(no_monkey_probability, STANDARD_8_DECK_BRANCH_GOLDEN.no_monkey);
 }
 
 #[test]
@@ -1197,18 +1266,26 @@ fn probability_output_reports_perfect_pair_exclusive_outcome_contract() {
         BetType::PerfectPair,
         BetOutcome::PerfectPairSingleSide,
     );
-    let both_sides_probability = outcome_probability(
-        &result,
-        BetType::PerfectPair,
-        BetOutcome::PerfectPairBothSides,
-    );
+	let both_sides_probability = outcome_probability(
+		&result,
+		BetType::PerfectPair,
+		BetOutcome::PerfectPairBothSides,
+	);
 
     assert!(single_side_probability > 0.0);
     assert!(both_sides_probability > 0.0);
-    assert_probability_close(
-        perfect_pair.probability,
-        single_side_probability + both_sides_probability,
-    );
+	assert_probability_close(
+		perfect_pair.probability,
+		single_side_probability + both_sides_probability,
+	);
+	assert_probability_close(
+		single_side_probability,
+		STANDARD_8_DECK_BRANCH_GOLDEN.perfect_pair_single_side,
+	);
+	assert_probability_close(
+		both_sides_probability,
+		STANDARD_8_DECK_BRANCH_GOLDEN.perfect_pair_both_sides,
+	);
 }
 
 #[test]
@@ -1235,12 +1312,13 @@ fn probability_output_reports_super_tie_0_to_9_without_aggregate_row() {
 
     assert_eq!(super_tie_rows.len(), expected_super_ties.len());
 
-    let super_tie_total = expected_super_ties
-        .into_iter()
-        .map(|bet_type| {
-            let row = result_by_bet_type(&result, bet_type);
-            assert!(
-                row.probability > 0.0,
+	let super_tie_total = expected_super_ties
+		.into_iter()
+		.enumerate()
+		.map(|(index, bet_type)| {
+			let row = result_by_bet_type(&result, bet_type);
+			assert!(
+				row.probability > 0.0,
                 "{bet_type:?} should have probability"
             );
             assert!(
@@ -1248,11 +1326,15 @@ fn probability_output_reports_super_tie_0_to_9_without_aggregate_row() {
                 "{bet_type:?} should not expose variants"
             );
             assert!(
-                row.outcomes.is_empty(),
-                "{bet_type:?} should not expose outcomes"
-            );
-            row.probability
-        })
+				row.outcomes.is_empty(),
+				"{bet_type:?} should not expose outcomes"
+			);
+			assert_probability_close(
+				row.probability,
+				STANDARD_8_DECK_BRANCH_GOLDEN.super_tie[index],
+			);
+			row.probability
+		})
         .sum::<f64>();
 
     assert_probability_close(

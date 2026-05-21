@@ -12,12 +12,21 @@ pub struct OutcomeGoldenConstants {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EvGoldenConstants {
-    pub player_default_base_ev: f64,
-    pub banker_default_base_ev: f64,
-    pub tie_default_base_ev: f64,
-    pub player_total_stake_effective_probability: f64,
-    pub player_non_refund_effective_probability: f64,
-    pub player_losing_only_effective_probability: f64,
+	pub player_default_base_ev: f64,
+	pub banker_default_base_ev: f64,
+	pub tie_default_base_ev: f64,
+	pub player_total_stake_effective_probability: f64,
+	pub player_non_refund_effective_probability: f64,
+	pub player_losing_only_effective_probability: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BranchGoldenConstants {
+	pub monkey: f64,
+	pub no_monkey: f64,
+	pub perfect_pair_single_side: f64,
+	pub perfect_pair_both_sides: f64,
+	pub super_tie: [f64; 10],
 }
 
 pub const STANDARD_8_DECK_GOLDEN: OutcomeGoldenConstants = OutcomeGoldenConstants {
@@ -27,12 +36,31 @@ pub const STANDARD_8_DECK_GOLDEN: OutcomeGoldenConstants = OutcomeGoldenConstant
 };
 
 pub const STANDARD_8_DECK_EV_GOLDEN: EvGoldenConstants = EvGoldenConstants {
-    player_default_base_ev: -0.012350813289166,
-    banker_default_base_ev: -0.010579057842472,
-    tie_default_base_ev: -0.143596287787231,
-    player_total_stake_effective_probability: 1.0,
-    player_non_refund_effective_probability: 0.904844031976359,
-    player_losing_only_effective_probability: 0.458597422632763,
+	player_default_base_ev: -0.012350813289166,
+	banker_default_base_ev: -0.010579057842472,
+	tie_default_base_ev: -0.143596287787231,
+	player_total_stake_effective_probability: 1.0,
+	player_non_refund_effective_probability: 0.904844031976359,
+	player_losing_only_effective_probability: 0.458597422632763,
+};
+
+pub const STANDARD_8_DECK_BRANCH_GOLDEN: BranchGoldenConstants = BranchGoldenConstants {
+	monkey: 0.002700933057584,
+	no_monkey: 0.348606293630310,
+	perfect_pair_single_side: 0.033165528732469,
+	perfect_pair_both_sides: 0.000284705513284,
+	super_tie: [
+		0.005797837591808,
+		0.004101157318499,
+		0.004002603434509,
+		0.004451528050187,
+		0.007261152765860,
+		0.007939352679897,
+		0.019240163750003,
+		0.020350026807283,
+		0.010979400529972,
+		0.011032745095623,
+	],
 };
 
 pub struct FixtureBet {
