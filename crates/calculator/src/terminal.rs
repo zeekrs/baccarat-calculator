@@ -447,6 +447,8 @@ pub(crate) fn terminal_predicate_matches(
         BetId::SuperTie9 => super_tie(outcome, 9),
         BetId::Lucky7Two => player_seven_win(outcome, 2),
         BetId::Lucky7Three => player_seven_win(outcome, 3),
+        BetId::BigLucky7 => player_seven_win(outcome, 3),
+        BetId::SmallLucky7 => player_seven_win(outcome, 2),
         BetId::SuperLucky7Four => super_lucky_seven(outcome, 4),
         BetId::SuperLucky7Five => super_lucky_seven(outcome, 5),
         BetId::SuperLucky7Six => super_lucky_seven(outcome, 6),

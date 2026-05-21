@@ -95,6 +95,8 @@ pub enum BetId {
     Lucky7Two,
     Lucky7Three,
     Lucky7Aggregate,
+    BigLucky7,
+    SmallLucky7,
     SuperLucky7Four,
     SuperLucky7Five,
     SuperLucky7Six,
@@ -196,6 +198,8 @@ impl BetId {
             Self::SuperTie8 => BetType::SuperTie8,
             Self::SuperTie9 => BetType::SuperTie9,
             Self::Lucky7Two | Self::Lucky7Three | Self::Lucky7Aggregate => BetType::Lucky7,
+            Self::BigLucky7 => BetType::BigLucky7,
+            Self::SmallLucky7 => BetType::SmallLucky7,
             Self::SuperLucky7Four
             | Self::SuperLucky7Five
             | Self::SuperLucky7Six
@@ -267,6 +271,8 @@ impl BetId {
                 | Self::SuperTie8
                 | Self::SuperTie9
                 | Self::Lucky7Aggregate
+                | Self::BigLucky7
+                | Self::SmallLucky7
                 | Self::SuperLucky7Aggregate
                 | Self::Flame7sAggregate
                 | Self::Heaven9Aggregate
@@ -320,6 +326,8 @@ pub const fn public_bet_id_for_type(bet_type: BetType) -> BetId {
         BetType::Dragon7 => BetId::Dragon7,
         BetType::Panda8 => BetId::Panda8,
         BetType::Lucky7 => BetId::Lucky7Aggregate,
+        BetType::BigLucky7 => BetId::BigLucky7,
+        BetType::SmallLucky7 => BetId::SmallLucky7,
         BetType::SuperLucky7 => BetId::SuperLucky7Aggregate,
         BetType::Flame7s => BetId::Flame7sAggregate,
         BetType::SuperTie0 => BetId::SuperTie0,
@@ -914,6 +922,8 @@ pub const BET_DEFINITIONS: &[BetDefinition] = &[
         Some(BetVariant::Lucky7(Lucky7Variant::Three)),
     ),
     bet_definition!(Lucky7Aggregate, BetClass::AggregateBet, false, None,),
+    bet_definition!(BigLucky7, BetClass::TerminalPredicate, false, None,),
+    bet_definition!(SmallLucky7, BetClass::TerminalPredicate, false, None,),
     bet_definition!(
         SuperLucky7Four,
         BetClass::TerminalPredicate,

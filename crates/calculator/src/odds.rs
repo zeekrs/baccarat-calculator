@@ -717,6 +717,8 @@ pub const DEFAULT_ODDS_SPECS: &[OddsSpec] = &[
     OddsSpec::simple(BetType::BigBull, 35.0),
     OddsSpec::simple(BetType::TigerBull, 4.0),
     OddsSpec::simple(BetType::WuDaLang, 150.0),
+    OddsSpec::simple(BetType::BigLucky7, 30.0),
+    OddsSpec::simple(BetType::SmallLucky7, 15.0),
     OddsSpec::simple(BetType::Dragon7, 40.0),
     OddsSpec::simple(BetType::Panda8, 25.0),
     OddsSpec::simple(BetType::SuperTie0, 150.0),

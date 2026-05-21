@@ -183,6 +183,8 @@ pub enum BetType {
     Dragon7,
     Panda8,
     Lucky7,
+    BigLucky7,
+    SmallLucky7,
     SuperLucky7,
     Flame7s,
     Monkey,
