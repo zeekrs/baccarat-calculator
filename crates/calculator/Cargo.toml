@@ -11,4 +11,9 @@ serde = { workspace = true, features = ["derive"] }
 types = { path = "../types" }
 
 [dev-dependencies]
+criterion = "0.7.0"
 serde_json = { workspace = true }
+
+[[bench]]
+name = "pure_rust_calculator"
+harness = false
