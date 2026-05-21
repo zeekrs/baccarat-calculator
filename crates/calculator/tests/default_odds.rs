@@ -18,6 +18,8 @@ fn default_odds_include_expected_values() {
     assert_eq!(spec_by_bet_id(BetId::Banker).odds(), Some(0.95));
     assert_eq!(spec_by_bet_id(BetId::Tie).odds(), Some(8.0));
     assert_eq!(spec_by_bet_id(BetId::Panda8).odds(), Some(25.0));
+    assert_eq!(spec_by_bet_id(BetId::BigLucky7).odds(), Some(30.0));
+    assert_eq!(spec_by_bet_id(BetId::SmallLucky7).odds(), Some(15.0));
     assert_eq!(spec_by_bet_id(BetId::Dragon7).odds(), Some(40.0));
     assert_eq!(spec_by_bet_id(BetId::SuperTie0).odds(), Some(150.0));
     assert_eq!(spec_by_bet_id(BetId::SuperTie1).odds(), Some(215.0));

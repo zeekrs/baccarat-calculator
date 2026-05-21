@@ -2,8 +2,9 @@ use calculator::standard_baccarat::*;
 use calculator::{
     calculate_ev, calculate_probabilities, default_odds_table, public_probability_definitions,
     standard_eight_deck_cards, BetMode, BetOutcome, BetType, BetVariant, Card, CardCount, CardRank,
-    CardSuit, DragonVariant, EffectiveAmountMode, Fortune4PairVariant, Lucky6Variant, MonkeyMode,
-    OddsSpec, OutcomeOdds, PerBetEvCalculationSpec, PerfectPairMode, TigerVariant,
+    CardSuit, DragonVariant, EffectiveAmountMode, Fortune4PairVariant, Lucky6Variant,
+    Lucky7Variant, MonkeyMode, OddsSpec, OutcomeOdds, PerBetEvCalculationSpec, PerfectPairMode,
+    TigerVariant,
 };
 
 #[path = "fixtures/source_standard_8_deck.rs"]
@@ -414,6 +415,8 @@ fn source_probability(bet_type: BetType) -> f64 {
 fn new_public_bet_types() -> HashSet<BetType> {
     [
         BetType::Monkey,
+        BetType::BigLucky7,
+        BetType::SmallLucky7,
         BetType::SuperTie0,
         BetType::SuperTie1,
         BetType::SuperTie2,
@@ -444,6 +447,15 @@ fn pure_probability_api_requires_only_card_counts() {
 
     let dragon7 = result_by_bet_type(&result, BetType::Dragon7);
     assert!(dragon7.probability > 0.0);
+
+    assert_probability_close(
+        result_by_bet_type(&result, BetType::BigLucky7).probability,
+        variant_probability(&result, BetType::Lucky7, BetVariant::Lucky7(Lucky7Variant::Three)),
+    );
+    assert_probability_close(
+        result_by_bet_type(&result, BetType::SmallLucky7).probability,
+        variant_probability(&result, BetType::Lucky7, BetVariant::Lucky7(Lucky7Variant::Two)),
+    );
 }
 
 #[test]
@@ -507,6 +519,15 @@ fn standard_eight_deck_matches_every_source_project_probability() {
             SOURCE_BASELINE_TOLERANCE,
         );
     }
+
+    assert_probability_close(
+        result_by_bet_type(&result, BetType::BigLucky7).probability,
+        variant_probability(&result, BetType::Lucky7, BetVariant::Lucky7(Lucky7Variant::Three)),
+    );
+    assert_probability_close(
+        result_by_bet_type(&result, BetType::SmallLucky7).probability,
+        variant_probability(&result, BetType::Lucky7, BetVariant::Lucky7(Lucky7Variant::Two)),
+    );
 }
 
 #[test]
