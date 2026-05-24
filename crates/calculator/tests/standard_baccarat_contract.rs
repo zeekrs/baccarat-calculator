@@ -1145,23 +1145,177 @@ fn ev_request_validation_accepts_zero_odds_and_rejects_invalid_odds() {
 }
 
 #[test]
-fn ev_rejects_aggregate_default_odds_without_selected_simple_or_mode_contract() {
-	let aggregate_odds = default_odds_table()
-		.get(calculator::BetId::Lucky6Aggregate)
-		.expect("Lucky6 should have aggregate default odds");
-	let spec = PerBetEvCalculationSpec {
-		id: String::from("lucky6-aggregate-default"),
-		bet_type: BetType::Lucky6,
-		mode: None,
-		odds: aggregate_odds,
-		rebate_rate: 0.0,
-		effective_mode: EffectiveAmountMode::TotalStake,
-	};
+fn ev_aggregate_odds_calculate_per_variant_ev() {
+    let lucky6_odds = default_odds_table()
+        .get(calculator::BetId::Lucky6Aggregate)
+        .expect("Lucky6 should have aggregate default odds");
+    let spec = PerBetEvCalculationSpec {
+        id: String::from("lucky6-aggregate-default"),
+        bet_type: BetType::Lucky6,
+        mode: None,
+        odds: lucky6_odds,
+        rebate_rate: 0.0,
+        effective_mode: EffectiveAmountMode::TotalStake,
+    };
 
-	let error = calculate_ev(&standard_cards(), &[spec])
-		.expect_err("aggregate odds must not be silently flattened into one EV odds value");
+    let result = calculate_ev(&standard_cards(), &[spec])
+        .expect("aggregate odds spec should calculate per-variant EV");
 
-	assert!(error.contains("invalid odds"));
+    let lucky6 = &result[0];
+    // P(Two)*12 + P(Three)*20 − P(lose) — must be less than zero (house edge)
+    assert!(lucky6.base_ev < 0.0, "Lucky6 base_ev should be negative");
+    // win_probability must equal the sum of Two + Three variant probabilities
+    assert_ev_close(
+        lucky6.win_probability,
+        source_probability(BetType::Lucky6),
+    );
+}
+
+#[test]
+fn ev_aggregate_super_lucky7_matches_per_variant_sum() {
+    let super_lucky7_odds = default_odds_table()
+        .get(calculator::BetId::SuperLucky7Aggregate)
+        .expect("SuperLucky7 should have aggregate default odds");
+    let spec = PerBetEvCalculationSpec {
+        id: String::from("super-lucky7-aggregate"),
+        bet_type: BetType::SuperLucky7,
+        mode: None,
+        odds: super_lucky7_odds,
+        rebate_rate: 0.0,
+        effective_mode: EffectiveAmountMode::TotalStake,
+    };
+
+    let result = calculate_ev(&standard_cards(), &[spec])
+        .expect("SuperLucky7 aggregate EV should calculate");
+
+    let slucky7 = &result[0];
+
+    // Manually verified: P(Four)*30 + P(Five)*40 + P(Six)*100 − P(lose) ≈ −0.14834
+    assert_ev_close(slucky7.base_ev, -0.148_342_730_577_21);
+    assert_ev_close(
+        slucky7.win_probability,
+        source_probability(BetType::SuperLucky7),
+    );
+    // Weighted-average odds should be well above the minimum payout of 30
+    assert!(
+        slucky7.odds > 30.0,
+        "weighted-average odds must exceed the minimum Four-card payout"
+    );
+}
+
+#[test]
+fn ev_standard_mode_excludes_push_from_rebate_basis() {
+    // Standard mode encodes the legacy "tie refunds, banker uses commission"
+    // rebate semantics. Verify that the rebate basis matches its definition for
+    // three representative bets:
+    //   - Player        : 1 − P(push)             (push = tie)
+    //   - Banker (0.95) : P(lose) + P(win) × 0.95 (commission-aware)
+    //   - SuperLucky7   : 1.0                     (no push)
+    let rebate_rate = 0.008;
+
+    let super_lucky7_odds = default_odds_table()
+        .get(calculator::BetId::SuperLucky7Aggregate)
+        .expect("SuperLucky7 should have aggregate default odds");
+
+    let specs = vec![
+        PerBetEvCalculationSpec {
+            id: String::from("player"),
+            bet_type: BetType::Player,
+            mode: None,
+            odds: OddsSpec::simple(BetType::Player, 1.0),
+            rebate_rate,
+            effective_mode: EffectiveAmountMode::Standard,
+        },
+        PerBetEvCalculationSpec {
+            id: String::from("banker"),
+            bet_type: BetType::Banker,
+            mode: None,
+            odds: OddsSpec::simple(BetType::Banker, 0.95),
+            rebate_rate,
+            effective_mode: EffectiveAmountMode::Standard,
+        },
+        PerBetEvCalculationSpec {
+            id: String::from("super-lucky7"),
+            bet_type: BetType::SuperLucky7,
+            mode: None,
+            odds: super_lucky7_odds,
+            rebate_rate,
+            effective_mode: EffectiveAmountMode::Standard,
+        },
+    ];
+
+    let result = calculate_ev(&standard_cards(), &specs)
+        .expect("Standard-mode rebate should calculate for Player/Banker/SuperLucky7");
+
+    let player = &result[0];
+    let expected_player_base = player.win_probability * 1.0 - player.lose_probability;
+    assert_ev_close(player.base_ev, expected_player_base);
+    assert!(
+        player.push_probability > 0.0,
+        "Player must expose a push (tie) probability"
+    );
+    let expected_player_rebate = rebate_rate * (1.0 - player.push_probability);
+    assert_ev_close(player.rebate_ev, expected_player_rebate);
+    assert_ev_close(player.total_ev, expected_player_base + expected_player_rebate);
+
+    let banker = &result[1];
+    let expected_banker_base = banker.win_probability * 0.95 - banker.lose_probability;
+    assert_ev_close(banker.base_ev, expected_banker_base);
+    let expected_banker_rebate =
+        rebate_rate * (banker.lose_probability + banker.win_probability * 0.95);
+    assert_ev_close(banker.rebate_ev, expected_banker_rebate);
+    assert_ev_close(banker.total_ev, expected_banker_base + expected_banker_rebate);
+    // Banker rebate must be strictly smaller than Player rebate at the same
+    // rate, because the commission shrinks the effective wager.
+    assert!(banker.rebate_ev < player.rebate_ev);
+
+    let slucky7 = &result[2];
+    assert_eq!(
+        slucky7.push_probability, 0.0,
+        "SuperLucky7 has no push branch"
+    );
+    assert_ev_close(slucky7.rebate_ev, rebate_rate);
+    assert_ev_close(slucky7.total_ev, slucky7.base_ev + rebate_rate);
+}
+
+#[test]
+fn ev_standard_mode_player_rebate_smaller_than_total_stake_mode() {
+    let rebate_rate = 0.008;
+    let result = calculate_ev(
+        &standard_cards(),
+        &[
+            PerBetEvCalculationSpec {
+                id: String::from("player-standard"),
+                bet_type: BetType::Player,
+                mode: None,
+                odds: OddsSpec::simple(BetType::Player, 1.0),
+                rebate_rate,
+                effective_mode: EffectiveAmountMode::Standard,
+            },
+            PerBetEvCalculationSpec {
+                id: String::from("player-total-stake"),
+                bet_type: BetType::Player,
+                mode: None,
+                odds: OddsSpec::simple(BetType::Player, 1.0),
+                rebate_rate,
+                effective_mode: EffectiveAmountMode::TotalStake,
+            },
+        ],
+    )
+    .expect("Player should calculate under both rebate modes");
+
+    let standard = &result[0];
+    let total_stake = &result[1];
+    assert_ev_close(standard.base_ev, total_stake.base_ev);
+    // TotalStake counts tie probability toward rebate; Standard excludes it.
+    let expected_gap = rebate_rate * standard.push_probability;
+    assert_ev_close(total_stake.rebate_ev - standard.rebate_ev, expected_gap);
+}
+
+#[test]
+fn ev_default_spec_uses_standard_rebate_basis() {
+    let spec = PerBetEvCalculationSpec::default();
+    assert_eq!(spec.effective_mode, EffectiveAmountMode::Standard);
 }
 
 #[test]

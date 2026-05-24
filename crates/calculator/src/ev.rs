@@ -7,26 +7,46 @@ use crate::{
         allowed_outcome_odds_for_mode, allows_compatibility_odds_for_required_outcome,
         required_odds_for_mode, winning_outcomes_for_mode,
     },
-    odds::{default_odds_table, OddsSpec},
+    odds::{default_odds_table, OddsSettlement, OddsSpec},
     probability::{
         calculate_probability_snapshot, outcome_probabilities_for_definition,
-        outcome_probability_breakdown, OutcomeProbability, OutcomeProbabilityBreakdown,
-        ProbabilitySnapshot,
+        outcome_probability_breakdown, variant_probabilities_for_definition, BetVariantProbability,
+        OutcomeProbability, OutcomeProbabilityBreakdown, ProbabilitySnapshot,
     },
     shoe::ShoeCounts,
     BetMode, BetOutcome, CardCount, PerfectPairMode,
 };
 
 /// Controls which probability mass is eligible for rebate EV.
+///
+/// Real platforms typically refund the unit stake on a push/tie, so push
+/// probability should not contribute to rebate. `Standard` encodes this
+/// industry-default behavior and is the recommended choice for live tables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectiveAmountMode {
-    /// Standard rebate basis for the bet, with Banker using resolved net odds.
+    /// Industry-default rebate basis: pushes refund the stake (excluded from
+    /// rebate) and Banker net odds absorb the house commission.
+    ///
+    /// - Banker: `P(lose) + P(win) × odds`. With `odds = 0.95` this yields
+    ///   `P(player) + 0.95 × P(banker)`, matching commission-aware platforms.
+    /// - Every other bet: `1 - P(push)`. Bets without a push (most side bets)
+    ///   collapse to `1.0`, while Player, Dragon, Natural, etc. exclude their
+    ///   refund probability.
     Standard,
-    /// Treat the full unit stake as effective.
+    /// Treat the full unit stake as effective regardless of outcome.
+    ///
+    /// Only use this for platforms that pay rebate on the gross wager including
+    /// pushes/refunds; otherwise prefer `Standard`.
     TotalStake,
     /// Exclude push or refund probability from the effective amount.
+    ///
+    /// Equivalent to `Standard` for non-Banker bets; differs from `Standard`
+    /// for Banker because it ignores the commission discount on wins.
     NonRefund,
     /// Use only losing probability as the effective amount.
+    ///
+    /// Suitable when rebate is paid only on the portion of stake that the
+    /// platform actually retains.
     LosingOnly,
 }
 
@@ -57,7 +77,9 @@ impl Default for PerBetEvCalculationSpec {
             mode: None,
             odds: OddsSpec::simple(BetType::Player, 1.0),
             rebate_rate: 0.0,
-            effective_mode: EffectiveAmountMode::TotalStake,
+            // Default to the commission- and push-aware rebate basis; pushes
+            // refund the stake and should not earn rebate on real platforms.
+            effective_mode: EffectiveAmountMode::Standard,
         }
     }
 }
@@ -91,6 +113,7 @@ pub(crate) struct BetEvDecomposition {
     definition: &'static BetDefinition,
     breakdown: OutcomeProbabilityBreakdown,
     outcomes: Vec<OutcomeProbability>,
+    variants: Vec<BetVariantProbability>,
 }
 
 /// Calculates caller-selected per-bet EV rows for the supplied card counts.
@@ -135,6 +158,7 @@ fn ev_outcome_decompositions(
             definition,
             breakdown,
             outcomes: outcome_probabilities_for_definition(definition, probabilities),
+            variants: variant_probabilities_for_definition(definition, probabilities)?,
         });
     }
 
@@ -152,17 +176,39 @@ fn calculate_per_bet_ev_result(
         return Err(format!("unsupported bet type {:?}", spec.bet_type));
     };
     let definition = decomposition.definition;
-    let odds = spec.odds.odds().ok_or_else(|| {
-        format!(
-            "EV spec {} for {:?} requires simple odds or a selected mode",
-            spec.id, spec.bet_type
-        )
-    })?;
-    let base_ev = if spec.mode.is_some() {
-        outcome_base_ev(spec, definition, decomposition)?
+
+    let (base_ev, odds) = if spec.mode.is_some() {
+        let odds = spec.odds.odds().ok_or_else(|| {
+            format!(
+                "EV spec {} for {:?} requires simple odds or a selected mode",
+                spec.id, spec.bet_type
+            )
+        })?;
+        (outcome_base_ev(spec, definition, decomposition)?, odds)
+    } else if spec.odds.children().is_some() {
+        let ev = aggregate_base_ev(spec, decomposition)?;
+        let win_prob = decomposition.breakdown.win_probability;
+        // Weighted-average payout per winning unit, for the summary `odds` field.
+        let weighted_odds = if win_prob > 0.0 {
+            (ev + decomposition.breakdown.lose_probability) / win_prob
+        } else {
+            0.0
+        };
+        (ev, weighted_odds)
     } else {
-        decomposition.breakdown.win_probability * odds - decomposition.breakdown.lose_probability
+        let odds = spec.odds.odds().ok_or_else(|| {
+            format!(
+                "EV spec {} for {:?} requires simple odds or a selected mode",
+                spec.id, spec.bet_type
+            )
+        })?;
+        (
+            decomposition.breakdown.win_probability * odds
+                - decomposition.breakdown.lose_probability,
+            odds,
+        )
     };
+
     let breakdown = decomposition.breakdown;
     let effective_probability =
         effective_probability_for_mode(spec.effective_mode, definition, &breakdown, Some(odds));
@@ -180,6 +226,29 @@ fn calculate_per_bet_ev_result(
         lose_probability: breakdown.lose_probability,
         push_probability: breakdown.push_probability,
     })
+}
+
+fn aggregate_base_ev(
+    spec: &PerBetEvCalculationSpec,
+    decomposition: &BetEvDecomposition,
+) -> Result<f64, String> {
+    let children = spec
+        .odds
+        .children()
+        .ok_or_else(|| format!("EV spec {} expected aggregate odds", spec.id))?;
+
+    let mut win_ev = 0.0;
+    for child in children.iter().filter(|c| c.settlement == OddsSettlement::Net) {
+        let p = decomposition
+            .variants
+            .iter()
+            .find(|v| v.variant == child.variant)
+            .map(|v| v.probability)
+            .unwrap_or(0.0);
+        win_ev += p * child.odds;
+    }
+
+    Ok(win_ev - decomposition.breakdown.lose_probability)
 }
 
 fn outcome_base_ev(
@@ -338,6 +407,13 @@ fn validate_ev_specs(specs: &[PerBetEvCalculationSpec]) -> Result<(), String> {
                 }
             }
         }
+        if let Some(children) = spec.odds.children() {
+            for child in children {
+                if !child.odds.is_finite() || child.odds < 0.0 {
+                    return Err(format!("EV spec {id} has invalid odds"));
+                }
+            }
+        }
         if let Some(mode) = spec.mode {
             winning_outcomes_for_mode(spec.bet_type, mode)?;
             let definition = public_probability_definitions()
@@ -345,7 +421,7 @@ fn validate_ev_specs(specs: &[PerBetEvCalculationSpec]) -> Result<(), String> {
                 .ok_or_else(|| format!("unsupported bet type {:?}", spec.bet_type))?;
             validate_outcome_odds_for_mode(spec, definition.id)?;
         }
-        if spec.odds.odds().is_none() && spec.mode.is_none() {
+        if spec.odds.odds().is_none() && spec.mode.is_none() && spec.odds.children().is_none() {
             return Err(format!("EV spec {id} has invalid odds"));
         }
         if !spec.rebate_rate.is_finite() || spec.rebate_rate < 0.0 || spec.rebate_rate > 1.0 {
