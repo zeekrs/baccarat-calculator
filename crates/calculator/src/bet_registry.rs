@@ -605,7 +605,7 @@ macro_rules! bet_definition {
     };
 }
 
-pub const BET_DEFINITIONS: &[BetDefinition] = &[
+const BET_DEFINITIONS: &[BetDefinition] = &[
     bet_definition!(Player, BetClass::TerminalPredicate, false, None,),
     bet_definition!(Banker, BetClass::TerminalPredicate, false, None,),
     bet_definition!(Tie, BetClass::TerminalPredicate, false, None,),

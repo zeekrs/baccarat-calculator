@@ -10,11 +10,11 @@ use crate::{
     odds::{default_odds_table, OddsSettlement, OddsSpec},
     probability::{
         calculate_probability_snapshot, outcome_probabilities_for_definition,
-        outcome_probability_breakdown, variant_probabilities_for_definition, BetVariantProbability,
+        outcome_probability_breakdown, variant_probabilities_for_definition, VariantProbability,
         OutcomeProbability, OutcomeProbabilityBreakdown, ProbabilitySnapshot,
     },
     shoe::ShoeCounts,
-    BetMode, BetOutcome, CardCount, PerfectPairMode,
+    BetMode, BetOutcome, CardCount, MonkeyMode, PerfectPairMode,
 };
 
 /// Controls which probability mass is eligible for rebate EV.
@@ -23,7 +23,7 @@ use crate::{
 /// probability should not contribute to rebate. `Standard` encodes this
 /// industry-default behavior and is the recommended choice for live tables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EffectiveAmountMode {
+pub enum RebateBasis {
     /// Industry-default rebate basis: pushes refund the stake (excluded from
     /// rebate) and Banker net odds absorb the house commission.
     ///
@@ -54,7 +54,7 @@ pub enum EffectiveAmountMode {
 ///
 /// Specs are validated independently and output rows preserve input order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PerBetEvCalculationSpec {
+pub struct EvSpec {
     /// Caller-defined nonblank identifier copied into the result row.
     pub id: String,
     /// Caller-facing public bet to calculate.
@@ -66,10 +66,10 @@ pub struct PerBetEvCalculationSpec {
     /// Rebate rate from 0.0 through 1.0.
     pub rebate_rate: f64,
     /// Basis used to calculate `rebate_ev`.
-    pub effective_mode: EffectiveAmountMode,
+    pub effective_mode: RebateBasis,
 }
 
-impl Default for PerBetEvCalculationSpec {
+impl Default for EvSpec {
     fn default() -> Self {
         Self {
             id: String::new(),
@@ -79,14 +79,14 @@ impl Default for PerBetEvCalculationSpec {
             rebate_rate: 0.0,
             // Default to the commission- and push-aware rebate basis; pushes
             // refund the stake and should not earn rebate on real platforms.
-            effective_mode: EffectiveAmountMode::Standard,
+            effective_mode: RebateBasis::Standard,
         }
     }
 }
 
-/// EV result for one `PerBetEvCalculationSpec`.
+/// EV result for one `EvSpec`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PerBetEvCalculationResult {
+pub struct EvResult {
     /// Caller-defined spec identifier.
     pub id: String,
     /// Public bet calculated for this row.
@@ -121,7 +121,7 @@ pub(crate) struct BetEvDecomposition {
     definition: &'static BetDefinition,
     breakdown: OutcomeProbabilityBreakdown,
     outcomes: Vec<OutcomeProbability>,
-    variants: Vec<BetVariantProbability>,
+    variants: Vec<VariantProbability>,
 }
 
 /// Calculates caller-selected per-bet EV rows for the supplied card counts.
@@ -131,8 +131,8 @@ pub(crate) struct BetEvDecomposition {
 /// `specs`. Output order always matches input order.
 pub fn calculate_ev(
     cards: &[CardCount],
-    specs: &[PerBetEvCalculationSpec],
-) -> Result<Vec<PerBetEvCalculationResult>, String> {
+    specs: &[EvSpec],
+) -> Result<Vec<EvResult>, String> {
     validate_ev_specs(specs)?;
 
     let counts = ShoeCounts::from_cards(cards)?;
@@ -174,9 +174,9 @@ fn ev_outcome_decompositions(
 }
 
 fn calculate_per_bet_ev_result(
-    spec: &PerBetEvCalculationSpec,
+    spec: &EvSpec,
     decompositions: &[BetEvDecomposition],
-) -> Result<PerBetEvCalculationResult, String> {
+) -> Result<EvResult, String> {
     let Some(decomposition) = decompositions
         .iter()
         .find(|decomposition| decomposition.definition.bet_type() == spec.bet_type)
@@ -185,10 +185,11 @@ fn calculate_per_bet_ev_result(
     };
     let definition = decomposition.definition;
 
-    let (base_ev, odds) = if spec.mode.is_some() {
+    let outcome_mode = outcome_mode_for_ev_spec(spec);
+    let (base_ev, odds) = if let Some(mode) = outcome_mode {
         // Outcome-bucket EV path: PerfectPair / Monkey style branched payouts.
         let odds = spec.odds.odds().ok_or_else(|| missing_odds_error(spec))?;
-        (outcome_base_ev(spec, definition, decomposition)?, odds)
+        (outcome_base_ev(spec, definition, decomposition, mode)?, odds)
     } else if spec.odds.children().is_some() {
         // Aggregate EV path: each variant pays its own odds; weighted summary.
         let ev = aggregate_base_ev(spec, decomposition)?;
@@ -217,7 +218,7 @@ fn calculate_per_bet_ev_result(
         effective_probability_for_mode(spec.effective_mode, definition, &breakdown, Some(odds));
     let rebate_ev = spec.rebate_rate * effective_probability;
 
-    Ok(PerBetEvCalculationResult {
+    Ok(EvResult {
         id: spec.id.clone(),
         bet_type: definition.bet_type(),
         odds,
@@ -231,8 +232,16 @@ fn calculate_per_bet_ev_result(
     })
 }
 
+fn outcome_mode_for_ev_spec(spec: &EvSpec) -> Option<BetMode> {
+    spec.mode.or(match spec.bet_type {
+        BetType::PerfectPair => Some(BetMode::PerfectPair(PerfectPairMode::Standard)),
+        BetType::Monkey => Some(BetMode::Monkey(MonkeyMode::NoMonkeyOnly)),
+        _ => None,
+    })
+}
+
 fn aggregate_base_ev(
-    spec: &PerBetEvCalculationSpec,
+    spec: &EvSpec,
     decomposition: &BetEvDecomposition,
 ) -> Result<f64, String> {
     let children = spec
@@ -284,7 +293,7 @@ fn aggregate_base_ev(
     Ok(win_ev - decomposition.breakdown.lose_probability)
 }
 
-fn missing_odds_error(spec: &PerBetEvCalculationSpec) -> String {
+fn missing_odds_error(spec: &EvSpec) -> String {
     format!(
         "EV spec {} for {:?} requires simple odds, outcome odds with a selected mode, \
          or aggregate odds with a child for every calculator variant",
@@ -293,15 +302,22 @@ fn missing_odds_error(spec: &PerBetEvCalculationSpec) -> String {
 }
 
 fn outcome_base_ev(
-    spec: &PerBetEvCalculationSpec,
+    spec: &EvSpec,
     definition: &BetDefinition,
     decomposition: &BetEvDecomposition,
+    mode: BetMode,
 ) -> Result<f64, String> {
-    let mode = spec
-        .mode
-        .ok_or_else(|| format!("EV spec {} is missing mode", spec.id))?;
     let winning_outcomes = winning_outcomes_for_mode(spec.bet_type, mode)?;
-    validate_outcome_odds_for_mode(spec, definition.id)?;
+    if spec.mode.is_some() {
+        validate_outcome_odds_for_mode(spec, definition.id)?;
+    } else if spec.odds.bet_id() != definition.id {
+        return Err(format!(
+            "EV spec {} odds bet {:?} does not match {:?}",
+            spec.id,
+            spec.odds.bet_id(),
+            definition.id
+        ));
+    }
 
     let mut win_ev = 0.0;
     for required in winning_outcomes {
@@ -319,7 +335,7 @@ fn outcome_base_ev(
 }
 
 fn validate_outcome_odds_for_mode(
-    spec: &PerBetEvCalculationSpec,
+    spec: &EvSpec,
     bet_id: BetId,
 ) -> Result<(), String> {
     if spec.odds.bet_id() != bet_id {
@@ -372,7 +388,7 @@ fn validate_outcome_odds_for_mode(
 }
 
 fn odds_for_required_outcome(
-    spec: &PerBetEvCalculationSpec,
+    spec: &EvSpec,
     mode: BetMode,
     outcome: BetOutcome,
 ) -> Result<f64, String> {
@@ -380,6 +396,10 @@ fn odds_for_required_outcome(
         BetMode::PerfectPair(PerfectPairMode::Standard) => spec
             .odds
             .odds_for_outcome(BetOutcome::PerfectPairSingleSide)
+            .or_else(|| spec.odds.odds()),
+        BetMode::Monkey(MonkeyMode::NoMonkeyOnly) => spec
+            .odds
+            .odds_for_outcome(BetOutcome::NoMonkey)
             .or_else(|| spec.odds.odds()),
         _ => spec.odds.odds_for_outcome(outcome),
     }
@@ -403,13 +423,13 @@ fn required_outcome_probability(
 }
 
 fn effective_probability_for_mode(
-    mode: EffectiveAmountMode,
+    mode: RebateBasis,
     definition: &BetDefinition,
     breakdown: &OutcomeProbabilityBreakdown,
     odds: Option<f64>,
 ) -> f64 {
     match mode {
-        EffectiveAmountMode::Standard => {
+        RebateBasis::Standard => {
             if definition.id == BetId::Banker {
                 // Banker rebate basis discounts the commission absorbed by the
                 // net odds; callers must always provide a resolved odds value
@@ -423,13 +443,13 @@ fn effective_probability_for_mode(
                 1.0 - breakdown.push_probability
             }
         }
-        EffectiveAmountMode::TotalStake => 1.0,
-        EffectiveAmountMode::NonRefund => 1.0 - breakdown.push_probability,
-        EffectiveAmountMode::LosingOnly => breakdown.lose_probability,
+        RebateBasis::TotalStake => 1.0,
+        RebateBasis::NonRefund => 1.0 - breakdown.push_probability,
+        RebateBasis::LosingOnly => breakdown.lose_probability,
     }
 }
 
-fn validate_ev_specs(specs: &[PerBetEvCalculationSpec]) -> Result<(), String> {
+fn validate_ev_specs(specs: &[EvSpec]) -> Result<(), String> {
     let mut ids = HashSet::new();
 
     for spec in specs {

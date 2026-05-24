@@ -81,13 +81,13 @@ NonRefund  = 1.0 - push_probability
 LosingOnly = lose_probability
 ```
 
-`Standard` matches commission-aware platform behavior: push outcomes refund the stake (so they do not earn rebate), and the Banker net odds absorb the house commission discount. It is the recommended default for live tables and the value used by `PerBetEvCalculationSpec::default()`.
+`Standard` matches commission-aware platform behavior: push outcomes refund the stake (so they do not earn rebate), and the Banker net odds absorb the house commission discount. It is the recommended default for live tables and the value used by `EvSpec::default()`.
 
-> **Breaking change (May 2026):** `PerBetEvCalculationSpec::default().effective_mode` changed from `TotalStake` to `Standard`. Callers that relied on the previous default should explicitly set `effective_mode: EffectiveAmountMode::TotalStake` in their specs.
+> **Breaking change (May 2026):** `EvSpec::default().effective_mode` changed from `TotalStake` to `Standard`. Callers that relied on the previous default should explicitly set `effective_mode: RebateBasis::TotalStake` in their specs.
 
 ## EV Spec Validation
 
-`PerBetEvCalculationSpec` must have a nonblank `id`. Duplicate trimmed ids are rejected. `odds` values must be finite and nonnegative. `rebate_rate` must be finite and between `0.0` and `1.0`, inclusive. `bet_type` must be one supported public calculator bet type. An empty spec list returns an empty result after card counts are validated.
+`EvSpec` must have a nonblank `id`. Duplicate trimmed ids are rejected. `odds` values must be finite and nonnegative. `rebate_rate` must be finite and between `0.0` and `1.0`, inclusive. `bet_type` must be one supported public calculator bet type. An empty spec list returns an empty result after card counts are validated.
 
 Outcome odds are validated against the selected `BetMode`. Missing required outcome odds are rejected, and irrelevant outcome odds for that mode are rejected.
 
@@ -100,9 +100,9 @@ Each spec maps to one concrete bet calculation request. Output order matches inp
 Per-bet request:
 
 ```rust
-use calculator::{BetType, EffectiveAmountMode, OddsSpec, PerBetEvCalculationSpec};
+use calculator::{BetType, RebateBasis, OddsSpec, EvSpec};
 
-let spec = PerBetEvCalculationSpec {
+let spec = EvSpec {
     id: "player-main-floor".to_owned(),
     bet_type: BetType::Player,
     mode: None,
@@ -111,7 +111,7 @@ let spec = PerBetEvCalculationSpec {
     // Standard excludes tie/push probability from the rebate basis to match
     // typical platform behavior. Use `TotalStake` only when the platform
     // pays rebate on the gross wager including pushes.
-    effective_mode: EffectiveAmountMode::Standard,
+    effective_mode: RebateBasis::Standard,
 };
 
 let result = calculate_ev(&cards, &[spec])?;

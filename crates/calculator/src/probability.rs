@@ -16,7 +16,7 @@ use crate::{
 
 /// Probability for one public variant under a canonical public bet row.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct BetVariantProbability {
+pub struct VariantProbability {
     /// Public variant identifier within the parent bet.
     pub variant: BetVariant,
     /// Objective probability for this variant under the supplied card counts.
@@ -34,25 +34,15 @@ pub struct OutcomeProbability {
 
 /// Probability row for one caller-facing public bet.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct BetProbabilityResult {
+pub struct ProbabilityResult {
     /// Caller-facing public bet identifier.
     pub bet_type: BetType,
     /// Aggregate probability for this public bet.
     pub probability: f64,
     /// Variant probabilities when this public row exposes variant detail.
-    pub variants: Vec<BetVariantProbability>,
+    pub variants: Vec<VariantProbability>,
     /// Outcome bucket probabilities when this public row has branch detail.
     pub outcomes: Vec<OutcomeProbability>,
-}
-
-/// Full probability response for the supplied card counts.
-///
-/// Contains every registered canonical public bet. It is not filtered by a
-/// caller-selected bet list.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ProbabilityCalculationResult {
-    /// Probability rows in registry order.
-    pub bets: Vec<BetProbabilityResult>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -327,7 +317,7 @@ pub(crate) struct BetProbabilityCore {
 /// per-bet odds and result rows.
 pub fn calculate_probabilities(
     cards: &[CardCount],
-) -> Result<ProbabilityCalculationResult, String> {
+) -> Result<Vec<ProbabilityResult>, String> {
     let counts = ShoeCounts::from_cards(cards)?;
     let probabilities = calculate_probability_snapshot(counts)?;
     let mut bets = Vec::new();
@@ -335,7 +325,7 @@ pub fn calculate_probabilities(
     for definition in public_probability_definitions() {
         let core = probability_for_definition(definition, &probabilities)?;
 
-        bets.push(BetProbabilityResult {
+        bets.push(ProbabilityResult {
             bet_type: definition.bet_type(),
             probability: core.probability,
             variants: variant_probabilities_for_definition(definition, &probabilities)?,
@@ -343,7 +333,7 @@ pub fn calculate_probabilities(
         });
     }
 
-    Ok(ProbabilityCalculationResult { bets })
+    Ok(bets)
 }
 
 fn same_rank_pair_probability(counts: &[u16; 13], total_cards: u16) -> ProbabilityRatio {
@@ -572,7 +562,7 @@ pub(crate) fn ordered4(total_cards: u16) -> u128 {
 pub(crate) fn variant_probabilities_for_definition(
     definition: &BetDefinition,
     probabilities: &ProbabilitySnapshot,
-) -> Result<Vec<BetVariantProbability>, String> {
+) -> Result<Vec<VariantProbability>, String> {
     let mut variants = Vec::new();
 
     for child in bet_definitions()
@@ -584,7 +574,7 @@ pub(crate) fn variant_probabilities_for_definition(
         };
         let core = probability_for_definition(child, probabilities)?;
 
-        variants.push(BetVariantProbability {
+        variants.push(VariantProbability {
             variant,
             probability: core.probability,
         });

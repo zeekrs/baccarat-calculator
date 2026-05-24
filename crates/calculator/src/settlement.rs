@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Cards are final dealt cards, not remaining shoe counts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SettledCards {
+pub struct DealtHands {
     /// Final player hand in deal order.
     pub player: Vec<Card>,
     /// Final banker hand in deal order.
@@ -28,7 +28,7 @@ pub struct SettlementOutcomeOdds {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SettlementOddsSpec {
     /// One net odds value for the bet.
-    Single(Decimal),
+    Simple(Decimal),
     /// Outcome-specific odds for a bet with branch outcomes.
     ByOutcome(Vec<SettlementOutcomeOdds>),
 }
@@ -39,7 +39,7 @@ pub enum SettlementOddsSpec {
 /// amount scale, odds scale, mode compatibility, duplicate outcome odds,
 /// irrelevant outcome odds, and missing required outcome odds fail-closed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BetSettlementSpec {
+pub struct SettlementSpec {
     /// Caller-defined nonblank identifier copied into the result row.
     pub id: String,
     /// Public bet to settle.
@@ -54,7 +54,7 @@ pub struct BetSettlementSpec {
 
 /// Odds actually applied to a winning settlement result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppliedOutcomeOdds {
+pub struct ResolvedOdds {
     /// Matched outcome for outcome-based bets, or `None` for single odds.
     pub outcome: Option<BetOutcome>,
     /// Decimal net odds applied to the stake.
@@ -72,9 +72,9 @@ pub enum SettlementStatus {
     Push,
 }
 
-/// Settlement result for one `BetSettlementSpec`.
+/// Settlement result for one `SettlementSpec`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BetSettlementResult {
+pub struct SettlementResult {
     /// Caller-defined settlement identifier.
     pub id: String,
     /// Public bet settled for this row.
@@ -92,7 +92,7 @@ pub struct BetSettlementResult {
     /// Profit or loss after settlement, rounded to two decimal places.
     pub profit: Decimal,
     /// Odds applied on a win. Empty for lose and push results.
-    pub applied_odds: Vec<AppliedOutcomeOdds>,
+    pub applied_odds: Vec<ResolvedOdds>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,9 +107,9 @@ enum Winner {
 /// Results preserve input order. Any invalid spec or unsupported settlement
 /// contract fails the whole batch.
 pub fn settle_bets(
-    cards: &SettledCards,
-    specs: &[BetSettlementSpec],
-) -> Result<Vec<BetSettlementResult>, String> {
+    cards: &DealtHands,
+    specs: &[SettlementSpec],
+) -> Result<Vec<SettlementResult>, String> {
     specs.iter().map(|spec| settle_bet(cards, spec)).collect()
 }
 
@@ -119,9 +119,9 @@ pub fn settle_bets(
 /// modes, duplicate or irrelevant outcome odds, and missing required outcome
 /// odds all return errors instead of guessing a payout.
 pub fn settle_bet(
-    cards: &SettledCards,
-    spec: &BetSettlementSpec,
-) -> Result<BetSettlementResult, String> {
+    cards: &DealtHands,
+    spec: &SettlementSpec,
+) -> Result<SettlementResult, String> {
     validate_settlement_input(cards, spec)?;
 
     let matched_outcomes = matched_outcomes(cards, spec.bet_type, spec.mode)?;
@@ -142,7 +142,7 @@ pub fn settle_bet(
         SettlementStatus::Push => spec.amount,
     });
 
-    Ok(BetSettlementResult {
+    Ok(SettlementResult {
         id: spec.id.clone(),
         bet_type: spec.bet_type,
         mode: spec.mode,
@@ -155,7 +155,7 @@ pub fn settle_bet(
     })
 }
 
-fn validate_settlement_input(cards: &SettledCards, spec: &BetSettlementSpec) -> Result<(), String> {
+fn validate_settlement_input(cards: &DealtHands, spec: &SettlementSpec) -> Result<(), String> {
     if spec.id.trim().is_empty() {
         return Err(String::from("settlement spec id cannot be blank"));
     }
@@ -184,13 +184,13 @@ fn validate_settlement_input(cards: &SettledCards, spec: &BetSettlementSpec) -> 
 
 fn validate_odds(odds: &SettlementOddsSpec, id: &str) -> Result<(), String> {
     match odds {
-        SettlementOddsSpec::Single(odds) if *odds < Decimal::ZERO => {
+        SettlementOddsSpec::Simple(odds) if *odds < Decimal::ZERO => {
             Err(format!("settlement spec {id} has negative odds"))
         }
-        SettlementOddsSpec::Single(odds) if odds.scale() > 2 => Err(format!(
+        SettlementOddsSpec::Simple(odds) if odds.scale() > 2 => Err(format!(
             "settlement spec {id} odds must have at most two decimal places"
         )),
-        SettlementOddsSpec::Single(_) => Ok(()),
+        SettlementOddsSpec::Simple(_) => Ok(()),
         SettlementOddsSpec::ByOutcome(outcomes) => {
             for outcome in outcomes {
                 if outcome.odds < Decimal::ZERO {
@@ -207,7 +207,7 @@ fn validate_odds(odds: &SettlementOddsSpec, id: &str) -> Result<(), String> {
     }
 }
 
-fn validate_outcome_odds(spec: &BetSettlementSpec) -> Result<(), String> {
+fn validate_outcome_odds(spec: &SettlementSpec) -> Result<(), String> {
     let SettlementOddsSpec::ByOutcome(outcomes) = &spec.odds else {
         return Ok(());
     };
@@ -244,7 +244,7 @@ fn round_money(amount: Decimal) -> Decimal {
 }
 
 fn settlement_status(
-    cards: &SettledCards,
+    cards: &DealtHands,
     bet_type: BetType,
     matched_outcomes: &[BetOutcome],
 ) -> Result<SettlementStatus, String> {
@@ -295,7 +295,7 @@ fn settlement_status(
 }
 
 fn matched_outcomes(
-    cards: &SettledCards,
+    cards: &DealtHands,
     bet_type: BetType,
     mode: Option<BetMode>,
 ) -> Result<Vec<BetOutcome>, String> {
@@ -308,7 +308,7 @@ fn matched_outcomes(
 }
 
 fn perfect_pair_outcomes(
-    cards: &SettledCards,
+    cards: &DealtHands,
     mode: Option<BetMode>,
 ) -> Result<Vec<BetOutcome>, String> {
     let mode = match mode {
@@ -331,7 +331,7 @@ fn perfect_pair_outcomes(
     })
 }
 
-fn monkey_outcomes(cards: &SettledCards, mode: Option<BetMode>) -> Result<Vec<BetOutcome>, String> {
+fn monkey_outcomes(cards: &DealtHands, mode: Option<BetMode>) -> Result<Vec<BetOutcome>, String> {
     let mode = match mode {
         Some(BetMode::Monkey(mode)) => mode,
         Some(mode) => return Err(format!("mode {mode:?} is incompatible with Monkey")),
@@ -356,7 +356,7 @@ fn monkey_outcomes(cards: &SettledCards, mode: Option<BetMode>) -> Result<Vec<Be
     })
 }
 
-fn tiger_outcomes(cards: &SettledCards) -> Result<Vec<BetOutcome>, String> {
+fn tiger_outcomes(cards: &DealtHands) -> Result<Vec<BetOutcome>, String> {
     if banker_total(cards) != 6 || winner(cards) != Winner::Banker {
         return Ok(Vec::new());
     }
@@ -369,11 +369,11 @@ fn tiger_outcomes(cards: &SettledCards) -> Result<Vec<BetOutcome>, String> {
 }
 
 fn applied_odds(
-    spec: &BetSettlementSpec,
+    spec: &SettlementSpec,
     matched_outcomes: &[BetOutcome],
-) -> Result<Vec<AppliedOutcomeOdds>, String> {
+) -> Result<Vec<ResolvedOdds>, String> {
     match &spec.odds {
-        SettlementOddsSpec::Single(odds) => Ok(vec![AppliedOutcomeOdds {
+        SettlementOddsSpec::Simple(odds) => Ok(vec![ResolvedOdds {
             outcome: matched_outcomes.first().copied(),
             odds: *odds,
         }]),
@@ -383,7 +383,7 @@ fn applied_odds(
                 outcomes
                     .iter()
                     .find(|candidate| candidate.outcome == *matched)
-                    .map(|candidate| AppliedOutcomeOdds {
+                    .map(|candidate| ResolvedOdds {
                         outcome: Some(*matched),
                         odds: candidate.odds,
                     })
@@ -401,7 +401,7 @@ fn is_perfect_pair(cards: &[Card]) -> bool {
         .unwrap_or(false)
 }
 
-fn initial_four_cards(cards: &SettledCards) -> Option<[Card; 4]> {
+fn initial_four_cards(cards: &DealtHands) -> Option<[Card; 4]> {
     Some([
         *cards.player.first()?,
         *cards.player.get(1)?,
@@ -414,7 +414,7 @@ const fn is_monkey_rank(rank: CardRank) -> bool {
     matches!(rank, CardRank::Jack | CardRank::Queen | CardRank::King)
 }
 
-fn winner(cards: &SettledCards) -> Winner {
+fn winner(cards: &DealtHands) -> Winner {
     match player_total(cards).cmp(&banker_total(cards)) {
         std::cmp::Ordering::Greater => Winner::Player,
         std::cmp::Ordering::Less => Winner::Banker,
@@ -422,11 +422,11 @@ fn winner(cards: &SettledCards) -> Winner {
     }
 }
 
-fn player_total(cards: &SettledCards) -> u8 {
+fn player_total(cards: &DealtHands) -> u8 {
     hand_total(&cards.player)
 }
 
-fn banker_total(cards: &SettledCards) -> u8 {
+fn banker_total(cards: &DealtHands) -> u8 {
     hand_total(&cards.banker)
 }
 
@@ -463,8 +463,8 @@ mod tests {
         Card { rank, suit }
     }
 
-    fn player_win_cards() -> SettledCards {
-        SettledCards {
+    fn player_win_cards() -> DealtHands {
+        DealtHands {
             player: vec![
                 card(CardRank::Nine, CardSuit::Clubs),
                 card(CardRank::King, CardSuit::Clubs),
@@ -476,8 +476,8 @@ mod tests {
         }
     }
 
-    fn banker_win_cards() -> SettledCards {
-        SettledCards {
+    fn banker_win_cards() -> DealtHands {
+        DealtHands {
             player: vec![
                 card(CardRank::Seven, CardSuit::Clubs),
                 card(CardRank::King, CardSuit::Clubs),
@@ -489,8 +489,8 @@ mod tests {
         }
     }
 
-    fn tie_cards() -> SettledCards {
-        SettledCards {
+    fn tie_cards() -> DealtHands {
+        DealtHands {
             player: vec![
                 card(CardRank::Eight, CardSuit::Clubs),
                 card(CardRank::King, CardSuit::Clubs),
@@ -507,22 +507,22 @@ mod tests {
         bet_type: BetType,
         amount: Decimal,
         odds: Decimal,
-    ) -> BetSettlementSpec {
-        BetSettlementSpec {
+    ) -> SettlementSpec {
+        SettlementSpec {
             id: String::from(id),
             bet_type,
             amount,
             mode: None,
-            odds: SettlementOddsSpec::Single(odds),
+            odds: SettlementOddsSpec::Simple(odds),
         }
     }
 
     fn assert_single_odds_result(
-        result: &BetSettlementResult,
+        result: &SettlementResult,
         status: SettlementStatus,
         profit: Decimal,
         payout: Decimal,
-        applied_odds: Vec<AppliedOutcomeOdds>,
+        applied_odds: Vec<ResolvedOdds>,
     ) {
         assert_eq!(result.status, status);
         assert_eq!(result.profit, profit);
@@ -548,7 +548,7 @@ mod tests {
             SettlementStatus::Win,
             Decimal::new(1000, 2),
             Decimal::new(2000, 2),
-            vec![AppliedOutcomeOdds {
+            vec![ResolvedOdds {
                 outcome: None,
                 odds: Decimal::ONE,
             }],
@@ -607,7 +607,7 @@ mod tests {
             SettlementStatus::Win,
             Decimal::new(1900, 2),
             Decimal::new(3900, 2),
-            vec![AppliedOutcomeOdds {
+            vec![ResolvedOdds {
                 outcome: None,
                 odds: Decimal::new(95, 2),
             }],
@@ -638,7 +638,7 @@ mod tests {
             SettlementStatus::Win,
             Decimal::new(8000, 2),
             Decimal::new(9000, 2),
-            vec![AppliedOutcomeOdds {
+            vec![ResolvedOdds {
                 outcome: None,
                 odds: Decimal::new(800, 2),
             }],
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn perfect_pair_both_sides_uses_only_both_sides_outcome_odds() {
-        let cards = SettledCards {
+        let cards = DealtHands {
             player: vec![
                 card(CardRank::Ace, CardSuit::Clubs),
                 card(CardRank::Ace, CardSuit::Clubs),
@@ -668,7 +668,7 @@ mod tests {
                 card(CardRank::King, CardSuit::Spades),
             ],
         };
-        let spec = BetSettlementSpec {
+        let spec = SettlementSpec {
             id: String::from("perfect-pair-1"),
             bet_type: BetType::PerfectPair,
             amount: Decimal::new(500, 2),
@@ -694,7 +694,7 @@ mod tests {
         );
         assert_eq!(
             result.applied_odds,
-            vec![AppliedOutcomeOdds {
+            vec![ResolvedOdds {
                 outcome: Some(BetOutcome::PerfectPairBothSides),
                 odds: Decimal::new(20000, 2),
             }]
@@ -705,7 +705,7 @@ mod tests {
 
     #[test]
     fn monkey_standard_settles_monkey_and_no_monkey_with_separate_odds() {
-        let monkey_cards = SettledCards {
+        let monkey_cards = DealtHands {
             player: vec![
                 card(CardRank::Jack, CardSuit::Clubs),
                 card(CardRank::Queen, CardSuit::Clubs),
@@ -715,7 +715,7 @@ mod tests {
                 card(CardRank::Jack, CardSuit::Diamonds),
             ],
         };
-        let no_monkey_cards = SettledCards {
+        let no_monkey_cards = DealtHands {
             player: vec![
                 card(CardRank::Ace, CardSuit::Clubs),
                 card(CardRank::Two, CardSuit::Clubs),
@@ -725,7 +725,7 @@ mod tests {
                 card(CardRank::Four, CardSuit::Diamonds),
             ],
         };
-        let spec = BetSettlementSpec {
+        let spec = SettlementSpec {
             id: String::from("monkey-standard"),
             bet_type: BetType::Monkey,
             amount: Decimal::new(300, 2),
@@ -751,7 +751,7 @@ mod tests {
             SettlementStatus::Win,
             Decimal::new(15000, 2),
             Decimal::new(15300, 2),
-            vec![AppliedOutcomeOdds {
+            vec![ResolvedOdds {
                 outcome: Some(BetOutcome::Monkey),
                 odds: Decimal::new(5000, 2),
             }],
@@ -765,7 +765,7 @@ mod tests {
             SettlementStatus::Win,
             Decimal::new(300, 2),
             Decimal::new(600, 2),
-            vec![AppliedOutcomeOdds {
+            vec![ResolvedOdds {
                 outcome: Some(BetOutcome::NoMonkey),
                 odds: Decimal::ONE,
             }],
@@ -774,7 +774,7 @@ mod tests {
 
     #[test]
     fn monkey_no_monkey_only_wins_only_no_monkey() {
-        let monkey_cards = SettledCards {
+        let monkey_cards = DealtHands {
             player: vec![
                 card(CardRank::Jack, CardSuit::Clubs),
                 card(CardRank::Queen, CardSuit::Clubs),
@@ -784,7 +784,7 @@ mod tests {
                 card(CardRank::Jack, CardSuit::Diamonds),
             ],
         };
-        let no_monkey_cards = SettledCards {
+        let no_monkey_cards = DealtHands {
             player: vec![
                 card(CardRank::Ace, CardSuit::Clubs),
                 card(CardRank::Two, CardSuit::Clubs),
@@ -794,7 +794,7 @@ mod tests {
                 card(CardRank::Four, CardSuit::Diamonds),
             ],
         };
-        let spec = BetSettlementSpec {
+        let spec = SettlementSpec {
             id: String::from("no-monkey-only"),
             bet_type: BetType::Monkey,
             amount: Decimal::new(700, 2),
@@ -824,7 +824,7 @@ mod tests {
             SettlementStatus::Win,
             Decimal::new(700, 2),
             Decimal::new(1400, 2),
-            vec![AppliedOutcomeOdds {
+            vec![ResolvedOdds {
                 outcome: Some(BetOutcome::NoMonkey),
                 odds: Decimal::ONE,
             }],
@@ -833,7 +833,7 @@ mod tests {
 
     #[test]
     fn tiger_settles_two_and_three_card_outcome_odds() {
-        let tiger_two_cards = SettledCards {
+        let tiger_two_cards = DealtHands {
             player: vec![
                 card(CardRank::Five, CardSuit::Clubs),
                 card(CardRank::King, CardSuit::Clubs),
@@ -843,7 +843,7 @@ mod tests {
                 card(CardRank::King, CardSuit::Diamonds),
             ],
         };
-        let tiger_three_cards = SettledCards {
+        let tiger_three_cards = DealtHands {
             player: vec![
                 card(CardRank::Five, CardSuit::Clubs),
                 card(CardRank::King, CardSuit::Clubs),
@@ -854,7 +854,7 @@ mod tests {
                 card(CardRank::Two, CardSuit::Hearts),
             ],
         };
-        let spec = BetSettlementSpec {
+        let spec = SettlementSpec {
             id: String::from("tiger"),
             bet_type: BetType::Tiger,
             amount: Decimal::new(400, 2),
@@ -885,7 +885,7 @@ mod tests {
             SettlementStatus::Win,
             Decimal::new(4800, 2),
             Decimal::new(5200, 2),
-            vec![AppliedOutcomeOdds {
+            vec![ResolvedOdds {
                 outcome: Some(BetOutcome::TigerTwoCards),
                 odds: Decimal::new(1200, 2),
             }],
@@ -899,7 +899,7 @@ mod tests {
             SettlementStatus::Win,
             Decimal::new(8000, 2),
             Decimal::new(8400, 2),
-            vec![AppliedOutcomeOdds {
+            vec![ResolvedOdds {
                 outcome: Some(BetOutcome::TigerThreeCards),
                 odds: Decimal::new(2000, 2),
             }],
@@ -929,7 +929,7 @@ mod tests {
         ];
 
         for (bet_type, total_rank, odds) in cases {
-            let cards = SettledCards {
+            let cards = DealtHands {
                 player: vec![
                     card(total_rank, CardSuit::Clubs),
                     card(CardRank::King, CardSuit::Clubs),
@@ -948,7 +948,7 @@ mod tests {
                 SettlementStatus::Win,
                 Decimal::new(200, 2) * odds,
                 Decimal::new(200, 2) + Decimal::new(200, 2) * odds,
-                vec![AppliedOutcomeOdds {
+                vec![ResolvedOdds {
                     outcome: None,
                     odds,
                 }],
@@ -975,12 +975,12 @@ mod tests {
 
     #[test]
     fn settlement_rejects_zero_amount() {
-        let spec = BetSettlementSpec {
+        let spec = SettlementSpec {
             id: String::from("zero-amount"),
             bet_type: BetType::Player,
             amount: Decimal::ZERO,
             mode: None,
-            odds: SettlementOddsSpec::Single(Decimal::ONE),
+            odds: SettlementOddsSpec::Simple(Decimal::ONE),
         };
 
         let err = settle_bet(&player_win_cards(), &spec).expect_err("zero amount should fail");
@@ -990,12 +990,12 @@ mod tests {
 
     #[test]
     fn settlement_rejects_amount_with_more_than_two_decimal_places() {
-        let spec = BetSettlementSpec {
+        let spec = SettlementSpec {
             id: String::from("amount-scale"),
             bet_type: BetType::Player,
             amount: Decimal::new(1001, 3),
             mode: None,
-            odds: SettlementOddsSpec::Single(Decimal::ONE),
+            odds: SettlementOddsSpec::Simple(Decimal::ONE),
         };
 
         let err = settle_bet(&player_win_cards(), &spec).expect_err("amount scale should fail");
@@ -1005,12 +1005,12 @@ mod tests {
 
     #[test]
     fn settlement_rejects_odds_with_more_than_two_decimal_places() {
-        let spec = BetSettlementSpec {
+        let spec = SettlementSpec {
             id: String::from("odds-scale"),
             bet_type: BetType::Player,
             amount: Decimal::new(1000, 2),
             mode: None,
-            odds: SettlementOddsSpec::Single(Decimal::new(1234, 3)),
+            odds: SettlementOddsSpec::Simple(Decimal::new(1234, 3)),
         };
 
         let err = settle_bet(&player_win_cards(), &spec).expect_err("odds scale should fail");
@@ -1020,7 +1020,7 @@ mod tests {
 
     #[test]
     fn settlement_rejects_missing_required_outcome_odds() {
-        let cards = SettledCards {
+        let cards = DealtHands {
             player: vec![
                 card(CardRank::Ace, CardSuit::Clubs),
                 card(CardRank::Ace, CardSuit::Clubs),
@@ -1030,7 +1030,7 @@ mod tests {
                 card(CardRank::King, CardSuit::Spades),
             ],
         };
-        let spec = BetSettlementSpec {
+        let spec = SettlementSpec {
             id: String::from("missing-outcome"),
             bet_type: BetType::PerfectPair,
             amount: Decimal::new(500, 2),
@@ -1048,7 +1048,7 @@ mod tests {
 
     #[test]
     fn settlement_rejects_irrelevant_outcome_odds() {
-        let spec = BetSettlementSpec {
+        let spec = SettlementSpec {
             id: String::from("irrelevant-outcome"),
             bet_type: BetType::Monkey,
             amount: Decimal::new(500, 2),
@@ -1072,12 +1072,12 @@ mod tests {
 
     #[test]
     fn settlement_rejects_incompatible_mode() {
-        let spec = BetSettlementSpec {
+        let spec = SettlementSpec {
             id: String::from("bad-mode"),
             bet_type: BetType::PerfectPair,
             amount: Decimal::new(500, 2),
             mode: Some(BetMode::Monkey(MonkeyMode::Standard)),
-            odds: SettlementOddsSpec::Single(Decimal::new(2500, 2)),
+            odds: SettlementOddsSpec::Simple(Decimal::new(2500, 2)),
         };
 
         let err = settle_bet(&player_win_cards(), &spec).expect_err("bad mode should fail");
@@ -1087,7 +1087,7 @@ mod tests {
 
     #[test]
     fn settlement_rejects_duplicate_outcome_odds() {
-        let spec = BetSettlementSpec {
+        let spec = SettlementSpec {
             id: String::from("duplicate-outcome"),
             bet_type: BetType::Monkey,
             amount: Decimal::new(500, 2),
@@ -1111,12 +1111,12 @@ mod tests {
 
     #[test]
     fn settlement_rounds_profit_and_payout_to_two_decimal_places() {
-        let spec = BetSettlementSpec {
+        let spec = SettlementSpec {
             id: String::from("rounding"),
             bet_type: BetType::Player,
             amount: Decimal::new(1001, 2),
             mode: None,
-            odds: SettlementOddsSpec::Single(Decimal::new(123, 2)),
+            odds: SettlementOddsSpec::Simple(Decimal::new(123, 2)),
         };
 
         let result =

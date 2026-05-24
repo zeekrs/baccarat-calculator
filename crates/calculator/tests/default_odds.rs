@@ -1,7 +1,7 @@
-use calculator::bet_registry::{public_bet_id_for_type, variant_bet_id};
 use calculator::{
-    bet_definitions, default_odds_specs, default_odds_table, public_probability_definitions,
-    BetClass, BetId, BetOutcome, BetType, BetVariant, DragonVariant, OddsSettlement, OddsSpec,
+    bet_definitions, default_odds_specs, default_odds_table, public_bet_id_for_type,
+    public_probability_definitions, variant_bet_id, BetClass, BetId, BetOutcome, BetType,
+    BetVariant, DragonVariant, OddsSettlement, OddsSpec,
 };
 use serde_json::json;
 use std::collections::HashSet;

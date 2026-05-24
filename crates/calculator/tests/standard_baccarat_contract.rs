@@ -2,8 +2,8 @@ use calculator::standard_baccarat::*;
 use calculator::{
     calculate_ev, calculate_probabilities, default_odds_table, public_probability_definitions,
     standard_eight_deck_cards, BetMode, BetOutcome, BetType, BetVariant, Card, CardCount, CardRank,
-    CardSuit, DragonVariant, EffectiveAmountMode, Fortune4PairVariant, Lucky6Variant,
-    Lucky7Variant, MonkeyMode, OddsSpec, OutcomeOdds, PerBetEvCalculationSpec, PerfectPairMode,
+    CardSuit, DragonVariant, RebateBasis, Fortune4PairVariant, Lucky6Variant,
+    Lucky7Variant, MonkeyMode, OddsSpec, OutcomeOdds, EvSpec, PerfectPairMode,
     TigerVariant,
 };
 
@@ -312,9 +312,9 @@ fn ev_config(
     bet_type: BetType,
     odds: f64,
     rebate_rate: f64,
-    effective_mode: EffectiveAmountMode,
-) -> PerBetEvCalculationSpec {
-    PerBetEvCalculationSpec {
+    effective_mode: RebateBasis,
+) -> EvSpec {
+    EvSpec {
         id: id.to_owned(),
         bet_type,
         mode: None,
@@ -324,7 +324,7 @@ fn ev_config(
     }
 }
 
-fn default_ev_spec(id: &str, bet_type: BetType) -> PerBetEvCalculationSpec {
+fn default_ev_spec(id: &str, bet_type: BetType) -> EvSpec {
     let definition = public_probability_definitions()
         .find(|definition| definition.bet_type() == bet_type)
         .unwrap_or_else(|| panic!("missing definition for {bet_type:?}"));
@@ -333,10 +333,10 @@ fn default_ev_spec(id: &str, bet_type: BetType) -> PerBetEvCalculationSpec {
         .and_then(|spec| spec.odds())
         .unwrap_or(1.0);
 
-    ev_config(id, bet_type, odds, 0.0, EffectiveAmountMode::TotalStake)
+    ev_config(id, bet_type, odds, 0.0, RebateBasis::TotalStake)
 }
 
-fn default_ev_specs() -> Vec<PerBetEvCalculationSpec> {
+fn default_ev_specs() -> Vec<EvSpec> {
     public_probability_definitions()
         .map(|definition| {
             default_ev_spec(
@@ -348,18 +348,17 @@ fn default_ev_specs() -> Vec<PerBetEvCalculationSpec> {
 }
 
 fn result_by_bet_type(
-    result: &calculator::ProbabilityCalculationResult,
+    result: &[calculator::ProbabilityResult],
     bet_type: BetType,
-) -> &calculator::BetProbabilityResult {
+) -> &calculator::ProbabilityResult {
     result
-        .bets
         .iter()
         .find(|bet| bet.bet_type == bet_type)
         .unwrap_or_else(|| panic!("missing result for {bet_type:?}"))
 }
 
 fn variant_probability(
-    result: &calculator::ProbabilityCalculationResult,
+    result: &[calculator::ProbabilityResult],
     bet_type: BetType,
     variant: BetVariant,
 ) -> f64 {
@@ -372,7 +371,7 @@ fn variant_probability(
 }
 
 fn outcome_probability(
-    result: &calculator::ProbabilityCalculationResult,
+    result: &[calculator::ProbabilityResult],
     bet_type: BetType,
     outcome: BetOutcome,
 ) -> f64 {
@@ -385,9 +384,9 @@ fn outcome_probability(
 }
 
 fn ev_result_by_bet_type(
-    result: &[calculator::PerBetEvCalculationResult],
+    result: &[calculator::EvResult],
     bet_type: BetType,
-) -> &calculator::PerBetEvCalculationResult {
+) -> &calculator::EvResult {
     result
         .iter()
         .find(|bet| bet.bet_type == bet_type)
@@ -437,7 +436,7 @@ fn pure_probability_api_requires_only_card_counts() {
     let result = calculate_probabilities(&standard_cards())
         .expect("standard cards should calculate probabilities");
 
-    assert_eq!(result.bets.len(), public_probability_definitions().count());
+    assert_eq!(result.len(), public_probability_definitions().count());
 
     let player = result_by_bet_type(&result, BetType::Player);
     assert_probability_close(
@@ -486,7 +485,6 @@ fn standard_eight_deck_matches_every_source_project_probability() {
         .map(|expected| expected.bet_type)
         .collect::<HashSet<_>>();
     let actual_bet_types = result
-        .bets
         .iter()
         .map(|actual| actual.bet_type)
         .collect::<HashSet<_>>();
@@ -535,7 +533,6 @@ fn standard_eight_deck_matches_every_source_project_variant_probability() {
     let result = calculate_probabilities(&standard_cards())
         .expect("standard card counts should calculate all public bet variants");
     let actual_variant_count = result
-        .bets
         .iter()
         .map(|bet| bet.variants.len())
         .sum::<usize>();
@@ -583,9 +580,8 @@ fn card_input_returns_all_registered_bets() {
     let result = calculate_probabilities(&standard_cards())
         .expect("card input should calculate every public bet type");
 
-    assert_eq!(result.bets.len(), public_probability_definitions().count());
+    assert_eq!(result.len(), public_probability_definitions().count());
     assert!(result
-        .bets
         .iter()
         .any(|bet| bet.bet_type == BetType::PerfectPair));
 }
@@ -598,7 +594,6 @@ fn probability_output_reports_each_public_bet_type_once() {
     for definition in public_probability_definitions() {
         assert!(
             result
-                .bets
                 .iter()
                 .any(|bet| bet.bet_type == definition.bet_type()),
             "missing public probability for {:?}",
@@ -607,7 +602,7 @@ fn probability_output_reports_each_public_bet_type_once() {
     }
 
     let mut seen = std::collections::HashSet::new();
-    for bet in &result.bets {
+    for bet in &result {
         assert!(
             seen.insert(bet.bet_type),
             "duplicate bet type {:?}",
@@ -657,7 +652,6 @@ fn probability_output_preserves_public_registry_order() {
         .map(|definition| definition.bet_type())
         .collect::<Vec<_>>();
     let actual = result
-        .bets
         .iter()
         .map(|bet| bet.bet_type)
         .collect::<Vec<_>>();
@@ -749,21 +743,21 @@ fn ev_batch_accepts_multiple_rebate_levels_for_same_bet() {
 			BetType::Player,
 			1.0,
 			0.0,
-			EffectiveAmountMode::NonRefund,
+			RebateBasis::NonRefund,
 		),
 		ev_config(
 			"player-one-percent-rebate",
 			BetType::Player,
 			1.0,
 			0.01,
-			EffectiveAmountMode::NonRefund,
+			RebateBasis::NonRefund,
 		),
 		ev_config(
 			"player-two-percent-rebate",
 			BetType::Player,
 			1.0,
 			0.02,
-			EffectiveAmountMode::NonRefund,
+			RebateBasis::NonRefund,
 		),
 	];
 
@@ -798,35 +792,35 @@ fn ev_rebate_modes_use_the_expected_effective_probability() {
                 BetType::Player,
                 1.0,
                 rebate_rate,
-                EffectiveAmountMode::Standard,
+                RebateBasis::Standard,
             ),
             ev_config(
                 "total-stake",
                 BetType::Player,
                 1.0,
                 rebate_rate,
-                EffectiveAmountMode::TotalStake,
+                RebateBasis::TotalStake,
             ),
             ev_config(
                 "non-refund",
                 BetType::Player,
                 1.0,
                 rebate_rate,
-                EffectiveAmountMode::NonRefund,
+                RebateBasis::NonRefund,
             ),
             ev_config(
                 "losing-only",
                 BetType::Player,
                 1.0,
                 rebate_rate,
-                EffectiveAmountMode::LosingOnly,
+                RebateBasis::LosingOnly,
             ),
             ev_config(
                 "standard-banker",
                 BetType::Banker,
                 0.95,
                 rebate_rate,
-                EffectiveAmountMode::Standard,
+                RebateBasis::Standard,
             ),
         ],
     )
@@ -918,42 +912,42 @@ fn ev_standard_eight_deck_matches_golden_values() {
                 BetType::Banker,
                 0.95,
                 rebate_rate,
-                EffectiveAmountMode::Standard,
+                RebateBasis::Standard,
             ),
             ev_config(
                 "total-stake",
                 BetType::Player,
                 1.0,
                 rebate_rate,
-                EffectiveAmountMode::TotalStake,
+                RebateBasis::TotalStake,
             ),
             ev_config(
                 "total-stake-banker",
                 BetType::Banker,
                 0.95,
                 rebate_rate,
-                EffectiveAmountMode::TotalStake,
+                RebateBasis::TotalStake,
             ),
             ev_config(
                 "total-stake-tie",
                 BetType::Tie,
                 8.0,
                 rebate_rate,
-                EffectiveAmountMode::TotalStake,
+                RebateBasis::TotalStake,
             ),
             ev_config(
                 "non-refund",
                 BetType::Player,
                 1.0,
                 rebate_rate,
-                EffectiveAmountMode::NonRefund,
+                RebateBasis::NonRefund,
             ),
             ev_config(
                 "losing-only",
                 BetType::Player,
                 1.0,
                 rebate_rate,
-                EffectiveAmountMode::LosingOnly,
+                RebateBasis::LosingOnly,
             ),
         ],
     )
@@ -1098,7 +1092,7 @@ fn ev_request_validation_accepts_zero_odds_and_rejects_invalid_odds() {
             BetType::Player,
             0.0,
             0.0,
-            EffectiveAmountMode::TotalStake,
+            RebateBasis::TotalStake,
         )],
     )
     .expect("zero odds should be allowed");
@@ -1111,7 +1105,7 @@ fn ev_request_validation_accepts_zero_odds_and_rejects_invalid_odds() {
             BetType::Player,
             -0.1,
             0.0,
-            EffectiveAmountMode::TotalStake,
+            RebateBasis::TotalStake,
         )],
     )
     .expect_err("negative odds should fail");
@@ -1124,7 +1118,7 @@ fn ev_request_validation_accepts_zero_odds_and_rejects_invalid_odds() {
             BetType::Player,
             f64::NAN,
             0.0,
-            EffectiveAmountMode::TotalStake,
+            RebateBasis::TotalStake,
         )],
     )
     .expect_err("NaN odds should fail");
@@ -1137,7 +1131,7 @@ fn ev_request_validation_accepts_zero_odds_and_rejects_invalid_odds() {
             BetType::Player,
             f64::INFINITY,
             0.0,
-            EffectiveAmountMode::TotalStake,
+            RebateBasis::TotalStake,
         )],
     )
     .expect_err("infinite odds should fail");
@@ -1156,13 +1150,13 @@ fn ev_aggregate_lucky6_matches_explicit_per_variant_formula() {
     let lucky6_odds = default_odds_table()
         .get(calculator::BetId::Lucky6Aggregate)
         .expect("Lucky6 should have aggregate default odds");
-    let spec = PerBetEvCalculationSpec {
+    let spec = EvSpec {
         id: String::from("lucky6-aggregate-default"),
         bet_type: BetType::Lucky6,
         mode: None,
         odds: lucky6_odds,
         rebate_rate: 0.0,
-        effective_mode: EffectiveAmountMode::Standard,
+        effective_mode: RebateBasis::Standard,
     };
 
     let ev = calculate_ev(&standard_cards(), &[spec])
@@ -1207,13 +1201,13 @@ fn ev_aggregate_super_lucky7_matches_per_variant_sum() {
     let super_lucky7_odds = default_odds_table()
         .get(calculator::BetId::SuperLucky7Aggregate)
         .expect("SuperLucky7 should have aggregate default odds");
-    let spec = PerBetEvCalculationSpec {
+    let spec = EvSpec {
         id: String::from("super-lucky7-aggregate"),
         bet_type: BetType::SuperLucky7,
         mode: None,
         odds: super_lucky7_odds,
         rebate_rate: 0.0,
-        effective_mode: EffectiveAmountMode::Standard,
+        effective_mode: RebateBasis::Standard,
     };
 
     let ev = calculate_ev(&standard_cards(), &[spec])
@@ -1260,13 +1254,13 @@ fn ev_aggregate_player_dragon_includes_push_branch() {
     let dragon_odds = default_odds_table()
         .get(calculator::BetId::PlayerDragonAggregate)
         .expect("PlayerDragon should have aggregate default odds");
-    let spec = PerBetEvCalculationSpec {
+    let spec = EvSpec {
         id: String::from("player-dragon-aggregate"),
         bet_type: BetType::PlayerDragon,
         mode: None,
         odds: dragon_odds,
         rebate_rate: 0.0,
-        effective_mode: EffectiveAmountMode::Standard,
+        effective_mode: RebateBasis::Standard,
     };
 
     let ev = calculate_ev(&standard_cards(), &[spec])
@@ -1356,7 +1350,7 @@ fn ev_aggregate_rejects_missing_variant() {
             settlement: calculator::OddsSettlement::Net,
         },
     ];
-    let spec = PerBetEvCalculationSpec {
+    let spec = EvSpec {
         id: String::from("super-lucky7-missing-six"),
         bet_type: BetType::SuperLucky7,
         mode: None,
@@ -1365,7 +1359,7 @@ fn ev_aggregate_rejects_missing_variant() {
             truncated_children,
         ),
         rebate_rate: 0.0,
-        effective_mode: EffectiveAmountMode::Standard,
+        effective_mode: RebateBasis::Standard,
     };
 
     let error = calculate_ev(&standard_cards(), &[spec])
@@ -1397,7 +1391,7 @@ fn ev_aggregate_rejects_unknown_variant() {
         odds: 200.0,
         settlement: calculator::OddsSettlement::Net,
     });
-    let spec = PerBetEvCalculationSpec {
+    let spec = EvSpec {
         id: String::from("super-lucky7-unknown-child"),
         bet_type: BetType::SuperLucky7,
         mode: None,
@@ -1406,7 +1400,7 @@ fn ev_aggregate_rejects_unknown_variant() {
             extended_children,
         ),
         rebate_rate: 0.0,
-        effective_mode: EffectiveAmountMode::Standard,
+        effective_mode: RebateBasis::Standard,
     };
 
     let error = calculate_ev(&standard_cards(), &[spec])
@@ -1427,13 +1421,13 @@ fn ev_aggregate_super_lucky7_stays_finite_on_depleted_shoe() {
     let super_lucky7_odds = default_odds_table()
         .get(calculator::BetId::SuperLucky7Aggregate)
         .expect("SuperLucky7 default aggregate odds");
-    let spec = PerBetEvCalculationSpec {
+    let spec = EvSpec {
         id: String::from("super-lucky7-depleted"),
         bet_type: BetType::SuperLucky7,
         mode: None,
         odds: super_lucky7_odds,
         rebate_rate: 0.0,
-        effective_mode: EffectiveAmountMode::Standard,
+        effective_mode: RebateBasis::Standard,
     };
 
     let result =
@@ -1472,29 +1466,29 @@ fn ev_standard_mode_excludes_push_from_rebate_basis() {
         .expect("SuperLucky7 should have aggregate default odds");
 
     let specs = vec![
-        PerBetEvCalculationSpec {
+        EvSpec {
             id: String::from("player"),
             bet_type: BetType::Player,
             mode: None,
             odds: OddsSpec::simple(BetType::Player, 1.0),
             rebate_rate,
-            effective_mode: EffectiveAmountMode::Standard,
+            effective_mode: RebateBasis::Standard,
         },
-        PerBetEvCalculationSpec {
+        EvSpec {
             id: String::from("banker"),
             bet_type: BetType::Banker,
             mode: None,
             odds: OddsSpec::simple(BetType::Banker, 0.95),
             rebate_rate,
-            effective_mode: EffectiveAmountMode::Standard,
+            effective_mode: RebateBasis::Standard,
         },
-        PerBetEvCalculationSpec {
+        EvSpec {
             id: String::from("super-lucky7"),
             bet_type: BetType::SuperLucky7,
             mode: None,
             odds: super_lucky7_odds,
             rebate_rate,
-            effective_mode: EffectiveAmountMode::Standard,
+            effective_mode: RebateBasis::Standard,
         },
     ];
 
@@ -1538,21 +1532,21 @@ fn ev_standard_mode_player_rebate_smaller_than_total_stake_mode() {
     let result = calculate_ev(
         &standard_cards(),
         &[
-            PerBetEvCalculationSpec {
+            EvSpec {
                 id: String::from("player-standard"),
                 bet_type: BetType::Player,
                 mode: None,
                 odds: OddsSpec::simple(BetType::Player, 1.0),
                 rebate_rate,
-                effective_mode: EffectiveAmountMode::Standard,
+                effective_mode: RebateBasis::Standard,
             },
-            PerBetEvCalculationSpec {
+            EvSpec {
                 id: String::from("player-total-stake"),
                 bet_type: BetType::Player,
                 mode: None,
                 odds: OddsSpec::simple(BetType::Player, 1.0),
                 rebate_rate,
-                effective_mode: EffectiveAmountMode::TotalStake,
+                effective_mode: RebateBasis::TotalStake,
             },
         ],
     )
@@ -1568,8 +1562,8 @@ fn ev_standard_mode_player_rebate_smaller_than_total_stake_mode() {
 
 #[test]
 fn ev_default_spec_uses_standard_rebate_basis() {
-    let spec = PerBetEvCalculationSpec::default();
-    assert_eq!(spec.effective_mode, EffectiveAmountMode::Standard);
+    let spec = EvSpec::default();
+    assert_eq!(spec.effective_mode, RebateBasis::Standard);
 }
 
 #[test]
@@ -1734,7 +1728,6 @@ fn probability_output_reports_super_tie_0_to_9_without_aggregate_row() {
         BetType::SuperTie9,
     ];
     let super_tie_rows = result
-        .bets
         .iter()
         .filter(|bet| format!("{:?}", bet.bet_type).starts_with("SuperTie"))
         .collect::<Vec<_>>();
@@ -1793,37 +1786,37 @@ fn ev_outcome_odds_validation_rejects_missing_and_irrelevant_outcomes() {
         odds: 25.0,
     }];
 
-    let missing = PerBetEvCalculationSpec {
+    let missing = EvSpec {
         id: String::from("missing-no-monkey"),
         bet_type: BetType::Monkey,
         mode: Some(BetMode::Monkey(MonkeyMode::Standard)),
         odds: OddsSpec::by_outcome(BetType::Monkey, 0.0, MONKEY_ONLY_ODDS),
         rebate_rate: 0.0,
-        effective_mode: EffectiveAmountMode::TotalStake,
+        effective_mode: RebateBasis::TotalStake,
     };
     let missing_error = calculate_ev(&standard_cards(), &[missing])
         .expect_err("standard Monkey mode should require both outcome odds");
     assert!(missing_error.contains("missing odds for outcome NoMonkey"));
 
-    let irrelevant = PerBetEvCalculationSpec {
+    let irrelevant = EvSpec {
         id: String::from("irrelevant-monkey"),
         bet_type: BetType::Monkey,
         mode: Some(BetMode::Monkey(MonkeyMode::NoMonkeyOnly)),
         odds: OddsSpec::by_outcome(BetType::Monkey, 0.0, NO_MONKEY_PLUS_IRRELEVANT_ODDS),
         rebate_rate: 0.0,
-        effective_mode: EffectiveAmountMode::TotalStake,
+        effective_mode: RebateBasis::TotalStake,
     };
     let irrelevant_error = calculate_ev(&standard_cards(), &[irrelevant])
         .expect_err("NoMonkeyOnly mode should reject Monkey odds");
     assert!(irrelevant_error.contains("irrelevant odds for outcome Monkey"));
 
-    let strict_perfect_pair = PerBetEvCalculationSpec {
+    let strict_perfect_pair = EvSpec {
         id: String::from("missing-both-sides"),
         bet_type: BetType::PerfectPair,
         mode: Some(BetMode::PerfectPair(PerfectPairMode::SinglePlusBoth)),
         odds: OddsSpec::by_outcome(BetType::PerfectPair, 25.0, PERFECT_PAIR_SINGLE_ONLY_ODDS),
         rebate_rate: 0.0,
-        effective_mode: EffectiveAmountMode::TotalStake,
+        effective_mode: RebateBasis::TotalStake,
     };
     let strict_error = calculate_ev(&standard_cards(), &[strict_perfect_pair])
         .expect_err("SinglePlusBoth mode should require both PerfectPair outcome odds");
@@ -1843,21 +1836,21 @@ fn ev_specs_accept_bet_type_oriented_odds_specs() {
         },
     ];
     let specs = [
-        PerBetEvCalculationSpec {
+        EvSpec {
             id: String::from("player-simple"),
             bet_type: BetType::Player,
             mode: None,
             odds: OddsSpec::simple(BetType::Player, 1.0),
             rebate_rate: 0.0,
-            effective_mode: EffectiveAmountMode::TotalStake,
+            effective_mode: RebateBasis::TotalStake,
         },
-        PerBetEvCalculationSpec {
+        EvSpec {
             id: String::from("monkey-outcomes"),
             bet_type: BetType::Monkey,
             mode: Some(BetMode::Monkey(MonkeyMode::Standard)),
             odds: OddsSpec::by_outcome(BetType::Monkey, 0.0, MONKEY_OUTCOME_ODDS),
             rebate_rate: 0.0,
-            effective_mode: EffectiveAmountMode::TotalStake,
+            effective_mode: RebateBasis::TotalStake,
         },
     ];
 
@@ -1881,7 +1874,7 @@ fn ev_specs_can_explicitly_price_perfect_pair_both_sides_mode() {
             odds: 200.0,
         },
     ];
-    let specs = [PerBetEvCalculationSpec {
+    let specs = [EvSpec {
         id: String::from("perfect-pair-single-plus-both"),
         bet_type: BetType::PerfectPair,
         mode: Some(BetMode::PerfectPair(PerfectPairMode::SinglePlusBoth)),
@@ -1891,7 +1884,7 @@ fn ev_specs_can_explicitly_price_perfect_pair_both_sides_mode() {
             PERFECT_PAIR_SINGLE_PLUS_BOTH_ODDS,
         ),
         rebate_rate: 0.0,
-        effective_mode: EffectiveAmountMode::TotalStake,
+        effective_mode: RebateBasis::TotalStake,
     }];
 
     let result = calculate_ev(&standard_cards(), &specs)
@@ -1918,13 +1911,13 @@ fn ev_outcome_odds_validation_rejects_duplicate_outcomes() {
         },
     ];
 
-    let duplicate = PerBetEvCalculationSpec {
+    let duplicate = EvSpec {
         id: String::from("duplicate-monkey"),
         bet_type: BetType::Monkey,
         mode: Some(BetMode::Monkey(MonkeyMode::Standard)),
         odds: OddsSpec::by_outcome(BetType::Monkey, 0.0, DUPLICATE_MONKEY_ODDS),
         rebate_rate: 0.0,
-        effective_mode: EffectiveAmountMode::TotalStake,
+        effective_mode: RebateBasis::TotalStake,
     };
     let duplicate_error = calculate_ev(&standard_cards(), &[duplicate])
         .expect_err("duplicate outcome odds should fail");

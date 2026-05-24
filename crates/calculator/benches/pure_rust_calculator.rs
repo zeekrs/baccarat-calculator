@@ -1,6 +1,6 @@
 use calculator::{
 	calculate_ev, calculate_probabilities, default_odds_specs, standard_eight_deck_cards,
-	EffectiveAmountMode, PerBetEvCalculationSpec,
+	RebateBasis, EvSpec,
 };
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
@@ -19,13 +19,13 @@ fn bench_standard_ev(c: &mut Criterion) {
 		.iter()
 		.enumerate()
 		.filter_map(|(index, odds)| {
-			odds.odds().map(|_| PerBetEvCalculationSpec {
+			odds.odds().map(|_| EvSpec {
 				id: format!("bench-{index}"),
 				bet_type: odds.bet_type(),
 				mode: None,
 				odds: odds.clone(),
 				rebate_rate: 0.01,
-				effective_mode: EffectiveAmountMode::TotalStake,
+				effective_mode: RebateBasis::TotalStake,
 			})
 		})
 		.collect();

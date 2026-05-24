@@ -297,7 +297,7 @@ pub struct OddsTable {
 
 impl OddsTable {
     /// Creates a lookup table over static odds specs.
-    pub const fn new(specs: &'static [OddsSpec]) -> Self {
+    pub(crate) const fn new(specs: &'static [OddsSpec]) -> Self {
         Self { specs }
     }
 
@@ -706,7 +706,7 @@ const MONKEY_OUTCOMES: &[OutcomeOdds] = &[
 /// `PerfectPair` defaults to single-side only with 25 odds. Both-sides odds,
 /// such as 200, are an explicit `PerfectPairMode::SinglePlusBoth` caller
 /// contract and are not part of the default table.
-pub const DEFAULT_ODDS_SPECS: &[OddsSpec] = &[
+const DEFAULT_ODDS_SPECS: &[OddsSpec] = &[
     OddsSpec::simple(BetType::Player, 1.0),
     OddsSpec::simple(BetType::Banker, 0.95),
     OddsSpec::simple(BetType::Tie, 8.0),
@@ -770,7 +770,7 @@ pub const DEFAULT_ODDS_SPECS: &[OddsSpec] = &[
 ];
 
 /// Static lookup table over `DEFAULT_ODDS_SPECS`.
-pub const DEFAULT_ODDS_TABLE: OddsTable = OddsTable::new(DEFAULT_ODDS_SPECS);
+const DEFAULT_ODDS_TABLE: OddsTable = OddsTable::new(DEFAULT_ODDS_SPECS);
 
 /// Returns the canonical static default odds specs.
 pub const fn default_odds_specs() -> &'static [OddsSpec] {

@@ -7,12 +7,12 @@
 //! calculation and used by EV and settlement inputs. `BetId` remains the
 //! registry identifier used when a public bet needs variant-level precision.
 
-pub mod bet_registry;
+mod bet_registry;
 mod ev;
 mod mode_contract;
-pub mod odds;
+mod odds;
 mod probability;
-pub mod settlement;
+mod settlement;
 mod shoe;
 mod terminal;
 
@@ -28,17 +28,17 @@ pub use types::baccarat::{Card, CardCount, CardRank, CardSuit};
 /// with registry entries or variant odds that need more precision than one
 /// public row.
 pub use bet_registry::{
-    bet_definitions, public_probability_definitions, BetClass, BetDefinition, BetId, BetType,
-    BetVariant, CharSiuVariant, DragonVariant, Flame7sVariant, Fortune4PairVariant, Heaven9Variant,
-    Lucky6Variant, Lucky7Variant, NaturalVariant, SuperLucky7Variant, TigerPairVariant,
-    TigerVariant,
+    bet_definitions, public_bet_id_for_type, public_probability_definitions, variant_bet_id,
+    BetClass, BetDefinition, BetId, BetType, BetVariant, CharSiuVariant, DragonVariant,
+    Flame7sVariant, Fortune4PairVariant, Heaven9Variant, Lucky6Variant, Lucky7Variant,
+    NaturalVariant, SuperLucky7Variant, TigerPairVariant, TigerVariant,
 };
 
 /// Per-bet EV calculation entrypoint, request specs, and result rows.
 ///
-/// `calculate_ev` preserves the order of `PerBetEvCalculationSpec` inputs.
+/// `calculate_ev` preserves the order of `EvSpec` inputs.
 pub use ev::{
-    calculate_ev, EffectiveAmountMode, PerBetEvCalculationResult, PerBetEvCalculationSpec,
+    calculate_ev, RebateBasis, EvResult, EvSpec,
 };
 
 /// Odds specs and default odds table used by EV callers.
@@ -48,7 +48,7 @@ pub use ev::{
 /// with `PerfectPairMode::SinglePlusBoth`.
 pub use odds::{
     default_odds_specs, default_odds_table, AggregateOddsSpec, OddsSettlement, OddsSpec, OddsTable,
-    OutcomeOdds, VariantOddsSpec,
+    OutcomeOdds, OutcomeOddsSpec, SimpleOddsSpec, VariantOddsSpec,
 };
 
 /// Probability calculation entrypoint and public probability result rows.
@@ -56,14 +56,13 @@ pub use odds::{
 /// `calculate_probabilities` returns every registered canonical public bet for
 /// the supplied card counts. It does not accept caller-selected bet lists.
 pub use probability::{
-    calculate_probabilities, BetProbabilityResult, BetVariantProbability, OutcomeProbability,
-    ProbabilityCalculationResult,
+    calculate_probabilities, OutcomeProbability, ProbabilityResult, VariantProbability,
 };
 
 /// Settlement entrypoints, input specs, and Decimal money results.
 pub use settlement::{
-    settle_bet, settle_bets, AppliedOutcomeOdds, BetSettlementResult, BetSettlementSpec,
-    SettledCards, SettlementOddsSpec, SettlementOutcomeOdds, SettlementStatus,
+    settle_bet, settle_bets, ResolvedOdds, SettlementResult, SettlementSpec,
+    DealtHands, SettlementOddsSpec, SettlementOutcomeOdds, SettlementStatus,
 };
 
 /// Creates a full eight-deck baccarat shoe as `CardCount` entries.
@@ -319,7 +318,6 @@ mod tests {
 
         for (bet_id, bet_type, total) in expected {
             let row = result
-                .bets
                 .iter()
                 .find(|row| row.bet_type == bet_type)
                 .unwrap_or_else(|| panic!("missing public SuperTie row for {bet_type:?}"));
@@ -349,7 +347,6 @@ mod tests {
         let result = calculate_probabilities(&standard_eight_deck_cards())
             .expect("standard cards should calculate");
         let monkey = result
-            .bets
             .iter()
             .find(|bet| bet.bet_type == BetType::Monkey)
             .expect("Monkey should be a public probability result");
@@ -389,7 +386,6 @@ mod tests {
         let result = calculate_probabilities(&standard_eight_deck_cards())
             .expect("standard cards should calculate");
         let perfect_pair = result
-            .bets
             .iter()
             .find(|bet| bet.bet_type == BetType::PerfectPair)
             .expect("PerfectPair should be a public probability result");
@@ -544,14 +540,14 @@ mod tests {
         }
     }
 
-    fn ev_spec(id: &str, bet_type: BetType, odds: f64) -> PerBetEvCalculationSpec {
-        PerBetEvCalculationSpec {
+    fn ev_spec(id: &str, bet_type: BetType, odds: f64) -> EvSpec {
+        EvSpec {
             id: id.to_owned(),
             bet_type,
             mode: None,
             odds: OddsSpec::simple(bet_type, odds),
             rebate_rate: 0.01,
-            effective_mode: EffectiveAmountMode::NonRefund,
+            effective_mode: RebateBasis::NonRefund,
         }
     }
 
@@ -560,20 +556,20 @@ mod tests {
         bet_type: BetType,
         mode: BetMode,
         odds: OddsSpec,
-    ) -> PerBetEvCalculationSpec {
-        PerBetEvCalculationSpec {
+    ) -> EvSpec {
+        EvSpec {
             id: id.to_owned(),
             bet_type,
             mode: Some(mode),
             odds,
             rebate_rate: 0.0,
-            effective_mode: EffectiveAmountMode::TotalStake,
+            effective_mode: RebateBasis::TotalStake,
         }
     }
 
     fn assert_probability_dependent_fields_match(
-        actual: &PerBetEvCalculationResult,
-        expected: &PerBetEvCalculationResult,
+        actual: &EvResult,
+        expected: &EvResult,
     ) {
         assert_close(actual.effective_probability, expected.effective_probability);
         assert_close(actual.win_probability, expected.win_probability);
@@ -665,6 +661,60 @@ mod tests {
             result[0].base_ev,
             monkey_probability * 50.0 + no_monkey_probability
                 - (1.0 - monkey_probability - no_monkey_probability),
+        );
+    }
+
+    #[test]
+    fn ev_defaults_perfect_pair_without_mode_to_standard() {
+        let probabilities = standard_probabilities();
+        let single_probability = probabilities.opening_two.perfect_pair.single.as_f64();
+        let both_probability = probabilities.opening_two.perfect_pair.both.as_f64();
+
+        let result = calculate_ev(
+            &standard_eight_deck_cards(),
+            &[EvSpec {
+                id: String::from("perfect-pair-default"),
+                bet_type: BetType::PerfectPair,
+                mode: None,
+                odds: default_odds_table()
+                    .get(BetId::PerfectPair)
+                    .expect("PerfectPair default odds should exist"),
+                rebate_rate: 0.0,
+                effective_mode: RebateBasis::TotalStake,
+            }],
+        )
+        .expect("PerfectPair EV without mode should calculate");
+
+        assert_close(
+            result[0].base_ev,
+            (single_probability + both_probability) * 25.0
+                - (1.0 - single_probability - both_probability),
+        );
+    }
+
+    #[test]
+    fn ev_defaults_monkey_without_mode_to_no_monkey_only() {
+        let probabilities = standard_probabilities();
+        let no_monkey_probability = probabilities.opening_two.monkey.no_monkey.as_f64();
+
+        let result = calculate_ev(
+            &standard_eight_deck_cards(),
+            &[EvSpec {
+                id: String::from("monkey-default"),
+                bet_type: BetType::Monkey,
+                mode: None,
+                odds: default_odds_table()
+                    .get(BetId::Monkey)
+                    .expect("Monkey default odds should exist"),
+                rebate_rate: 0.0,
+                effective_mode: RebateBasis::TotalStake,
+            }],
+        )
+        .expect("Monkey EV without mode should calculate");
+
+        assert_close(
+            result[0].base_ev,
+            no_monkey_probability - (1.0 - no_monkey_probability),
         );
     }
 
@@ -768,13 +818,13 @@ mod tests {
     fn ev_request_validation_rejects_blank_spec_id() {
         let error = calculate_ev(
             &standard_eight_deck_cards(),
-            &[PerBetEvCalculationSpec {
+            &[EvSpec {
                 id: String::from("   "),
                 bet_type: BetType::Player,
                 mode: None,
                 odds: OddsSpec::simple(BetType::Player, 1.0),
                 rebate_rate: 0.1,
-                effective_mode: EffectiveAmountMode::TotalStake,
+                effective_mode: RebateBasis::TotalStake,
             }],
         )
         .expect_err("blank spec id should fail");
@@ -795,13 +845,13 @@ mod tests {
     fn ev_request_validation_rejects_invalid_odds_and_rebate() {
         let invalid_odds_error = calculate_ev(
             &standard_eight_deck_cards(),
-            &[PerBetEvCalculationSpec {
+            &[EvSpec {
                 id: String::from("spec-b"),
                 bet_type: BetType::Player,
                 mode: None,
                 odds: OddsSpec::simple(BetType::Player, f64::NAN),
                 rebate_rate: 0.1,
-                effective_mode: EffectiveAmountMode::TotalStake,
+                effective_mode: RebateBasis::TotalStake,
             }],
         )
         .expect_err("NaN odds should fail");
@@ -809,13 +859,13 @@ mod tests {
 
         let invalid_rebate_error = calculate_ev(
             &standard_eight_deck_cards(),
-            &[PerBetEvCalculationSpec {
+            &[EvSpec {
                 id: String::from("spec-c"),
                 bet_type: BetType::Player,
                 mode: None,
                 odds: OddsSpec::simple(BetType::Player, 1.0),
                 rebate_rate: 1.1,
-                effective_mode: EffectiveAmountMode::TotalStake,
+                effective_mode: RebateBasis::TotalStake,
             }],
         )
         .expect_err("rebate above 1.0 should fail");
