@@ -56,6 +56,15 @@ base_ev = win_probability * net_odds - lose_probability
 
 Push or refund outcomes contribute `0.0` to `base_ev`. `Player` and `Banker` treat `Tie` as push/refund. Dragon and Natural push variants have odds `0.0`, report their event probability as `push_probability`, and do not add to `win_probability`.
 
+Aggregate bets (such as `Lucky6`, `SuperLucky7`, `PlayerDragon`) use per-variant odds:
+
+```text
+base_ev = sum(p_variant * odds_variant for each Net variant) - lose_probability
+odds    = (base_ev + lose_probability) / win_probability   # weighted-average summary
+```
+
+`OddsSpec::Aggregate` must list every calculator variant (winning and refund). `calculate_ev` rejects mismatched aggregate odds. Callers that intentionally pay a single flat payout for all winning variants should use `OddsSpec::Simple` on the aggregate bet type instead; this falls back to the simple-bet formula above and is intentionally supported for promo / flat-odds offers.
+
 Rebate EV is per spec and uses the selected effective amount mode:
 
 ```text
@@ -66,11 +75,15 @@ total_ev = base_ev + rebate_ev
 Effective amount modes are:
 
 ```text
-Standard = 1.0 - push_probability, except Banker win uses resolved banker net odds as its effective amount
+Standard   = 1.0 - push_probability, except Banker uses lose_probability + win_probability * banker_net_odds
 TotalStake = 1.0
-NonRefund = 1.0 - push_probability
+NonRefund  = 1.0 - push_probability
 LosingOnly = lose_probability
 ```
+
+`Standard` matches commission-aware platform behavior: push outcomes refund the stake (so they do not earn rebate), and the Banker net odds absorb the house commission discount. It is the recommended default for live tables and the value used by `PerBetEvCalculationSpec::default()`.
+
+> **Breaking change (May 2026):** `PerBetEvCalculationSpec::default().effective_mode` changed from `TotalStake` to `Standard`. Callers that relied on the previous default should explicitly set `effective_mode: EffectiveAmountMode::TotalStake` in their specs.
 
 ## EV Spec Validation
 
@@ -95,7 +108,10 @@ let spec = PerBetEvCalculationSpec {
     mode: None,
     odds: OddsSpec::simple(BetType::Player, 1.0),
     rebate_rate: 0.01,
-    effective_mode: EffectiveAmountMode::TotalStake,
+    // Standard excludes tie/push probability from the rebate basis to match
+    // typical platform behavior. Use `TotalStake` only when the platform
+    // pays rebate on the gross wager including pushes.
+    effective_mode: EffectiveAmountMode::Standard,
 };
 
 let result = calculate_ev(&cards, &[spec])?;

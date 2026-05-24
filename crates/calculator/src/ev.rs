@@ -92,6 +92,14 @@ pub struct PerBetEvCalculationResult {
     /// Public bet calculated for this row.
     pub bet_type: BetType,
     /// Resolved net odds used for the base EV summary.
+    ///
+    /// For `Simple`, `ByOutcome`, and `Variant` specs this is the caller-supplied
+    /// net odds value. For `Aggregate` specs this is the probability-weighted
+    /// average payout per winning unit, computed as
+    /// `(base_ev + lose_probability) / win_probability` so that the summary row
+    /// remains a single scalar. Consumers should not assume
+    /// `win_probability × odds - lose_probability == base_ev` for aggregate
+    /// rows; use the per-variant odds in the input spec for reverse derivation.
     pub odds: f64,
     /// Unit-stake EV before rebate.
     pub base_ev: f64,
@@ -178,17 +186,16 @@ fn calculate_per_bet_ev_result(
     let definition = decomposition.definition;
 
     let (base_ev, odds) = if spec.mode.is_some() {
-        let odds = spec.odds.odds().ok_or_else(|| {
-            format!(
-                "EV spec {} for {:?} requires simple odds or a selected mode",
-                spec.id, spec.bet_type
-            )
-        })?;
+        // Outcome-bucket EV path: PerfectPair / Monkey style branched payouts.
+        let odds = spec.odds.odds().ok_or_else(|| missing_odds_error(spec))?;
         (outcome_base_ev(spec, definition, decomposition)?, odds)
     } else if spec.odds.children().is_some() {
+        // Aggregate EV path: each variant pays its own odds; weighted summary.
         let ev = aggregate_base_ev(spec, decomposition)?;
         let win_prob = decomposition.breakdown.win_probability;
-        // Weighted-average payout per winning unit, for the summary `odds` field.
+        // Weighted-average payout per winning unit, used only for the summary
+        // `odds` field; downstream rebate logic for Banker never enters this
+        // branch because Banker is not an aggregate bet.
         let weighted_odds = if win_prob > 0.0 {
             (ev + decomposition.breakdown.lose_probability) / win_prob
         } else {
@@ -196,12 +203,8 @@ fn calculate_per_bet_ev_result(
         };
         (ev, weighted_odds)
     } else {
-        let odds = spec.odds.odds().ok_or_else(|| {
-            format!(
-                "EV spec {} for {:?} requires simple odds or a selected mode",
-                spec.id, spec.bet_type
-            )
-        })?;
+        // Simple / ByOutcome EV path: one net odds for every winning outcome.
+        let odds = spec.odds.odds().ok_or_else(|| missing_odds_error(spec))?;
         (
             decomposition.breakdown.win_probability * odds
                 - decomposition.breakdown.lose_probability,
@@ -237,18 +240,56 @@ fn aggregate_base_ev(
         .children()
         .ok_or_else(|| format!("EV spec {} expected aggregate odds", spec.id))?;
 
-    let mut win_ev = 0.0;
-    for child in children.iter().filter(|c| c.settlement == OddsSettlement::Net) {
-        let p = decomposition
+    // Completeness invariant: aggregate EV is well-defined only when the odds
+    // spec lists exactly the same variants the calculator knows about.
+    //
+    // Otherwise a missing winning variant gets folded into `lose_probability`
+    // (since lose is derived from the full breakdown) and the EV silently
+    // underestimates the bet. Catch the mismatch instead of letting it through.
+    for child in children {
+        let known = decomposition
             .variants
             .iter()
-            .find(|v| v.variant == child.variant)
-            .map(|v| v.probability)
-            .unwrap_or(0.0);
-        win_ev += p * child.odds;
+            .any(|variant| variant.variant == child.variant);
+        if !known {
+            return Err(format!(
+                "EV spec {} aggregate child {:?} does not match any calculator variant for {:?}",
+                spec.id, child.variant, spec.bet_type
+            ));
+        }
+    }
+    for variant in &decomposition.variants {
+        let listed = children
+            .iter()
+            .any(|child| child.variant == variant.variant);
+        if !listed {
+            return Err(format!(
+                "EV spec {} aggregate odds for {:?} is missing variant {:?}",
+                spec.id, spec.bet_type, variant.variant
+            ));
+        }
+    }
+
+    let mut win_ev = 0.0;
+    for child in children.iter().filter(|c| c.settlement == OddsSettlement::Net) {
+        let probability = decomposition
+            .variants
+            .iter()
+            .find(|variant| variant.variant == child.variant)
+            .map(|variant| variant.probability)
+            .expect("variant matched in completeness check above");
+        win_ev += probability * child.odds;
     }
 
     Ok(win_ev - decomposition.breakdown.lose_probability)
+}
+
+fn missing_odds_error(spec: &PerBetEvCalculationSpec) -> String {
+    format!(
+        "EV spec {} for {:?} requires simple odds, outcome odds with a selected mode, \
+         or aggregate odds with a child for every calculator variant",
+        spec.id, spec.bet_type
+    )
 }
 
 fn outcome_base_ev(
@@ -370,7 +411,14 @@ fn effective_probability_for_mode(
     match mode {
         EffectiveAmountMode::Standard => {
             if definition.id == BetId::Banker {
-                breakdown.lose_probability + breakdown.win_probability * odds.unwrap_or(1.0)
+                // Banker rebate basis discounts the commission absorbed by the
+                // net odds; callers must always provide a resolved odds value
+                // when calculating Banker in Standard mode.
+                let banker_odds = odds.expect(
+                    "Standard mode for Banker requires resolved net odds; \
+                     this is enforced by `calculate_per_bet_ev_result`",
+                );
+                breakdown.lose_probability + breakdown.win_probability * banker_odds
             } else {
                 1.0 - breakdown.push_probability
             }

@@ -47,7 +47,8 @@ pub use ev::{
 /// separate both-sides outcome, such as 200, must pass explicit outcome odds
 /// with `PerfectPairMode::SinglePlusBoth`.
 pub use odds::{
-    default_odds_specs, default_odds_table, OddsSettlement, OddsSpec, OddsTable, OutcomeOdds,
+    default_odds_specs, default_odds_table, AggregateOddsSpec, OddsSettlement, OddsSpec, OddsTable,
+    OutcomeOdds, VariantOddsSpec,
 };
 
 /// Probability calculation entrypoint and public probability result rows.

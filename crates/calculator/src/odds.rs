@@ -117,6 +117,25 @@ impl<'de> Deserialize<'de> for AggregateOddsSpec {
 /// `Simple` covers one public bet with one net odds value. `ByOutcome` covers a
 /// public bet with outcome-specific odds. `Variant` and `Aggregate` keep
 /// registry precision for default odds and aggregate families.
+///
+/// ### Aggregate bet types
+///
+/// Aggregate canonical bets (such as `BetType::Lucky6`, `BetType::SuperLucky7`,
+/// `BetType::PlayerDragon`) accept two distinct odds representations:
+///
+/// - `OddsSpec::Aggregate`: every winning variant pays its own odds. This is the
+///   default-table representation and yields the math-correct per-variant EV
+///   calculation. Aggregate odds must list every calculator variant (including
+///   push variants where applicable) — `calculate_ev` rejects mismatched lists.
+/// - `OddsSpec::Simple` on the aggregate bet type: every winning variant pays
+///   the same net odds value. This is intentionally supported so that callers
+///   can model promo / flat-odds offers without splitting children. The EV
+///   reduces to `win_probability × net_odds − lose_probability` and will differ
+///   from the per-variant `Aggregate` form unless every variant happens to
+///   share that single net odds value.
+///
+/// Pick `Aggregate` for accurate house-edge analysis and `Simple` only when the
+/// platform actually pays a single net odds for every winning variant.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum OddsSpec {
     /// One public bet with one net odds value.
@@ -178,6 +197,18 @@ impl OddsSpec {
         Self::Aggregate(AggregateOddsSpec {
             bet_id,
             children: Cow::Borrowed(children),
+        })
+    }
+
+    /// Builds an aggregate odds family from owned variant children.
+    ///
+    /// Useful when callers construct aggregate odds dynamically (e.g. from a
+    /// platform config or in tests). For static default odds prefer
+    /// [`OddsSpec::aggregate`].
+    pub fn aggregate_owned(bet_id: BetId, children: Vec<VariantOddsSpec>) -> Self {
+        Self::Aggregate(AggregateOddsSpec {
+            bet_id,
+            children: Cow::Owned(children),
         })
     }
 

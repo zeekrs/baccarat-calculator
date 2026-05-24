@@ -1144,8 +1144,15 @@ fn ev_request_validation_accepts_zero_odds_and_rejects_invalid_odds() {
 	assert!(infinity_error.contains("invalid odds"));
 }
 
+fn default_variant_odds(child_id: calculator::BetId) -> f64 {
+    default_odds_table()
+        .get(child_id)
+        .and_then(|spec| spec.odds())
+        .unwrap_or_else(|| panic!("missing default odds for {child_id:?}"))
+}
+
 #[test]
-fn ev_aggregate_odds_calculate_per_variant_ev() {
+fn ev_aggregate_lucky6_matches_explicit_per_variant_formula() {
     let lucky6_odds = default_odds_table()
         .get(calculator::BetId::Lucky6Aggregate)
         .expect("Lucky6 should have aggregate default odds");
@@ -1155,19 +1162,43 @@ fn ev_aggregate_odds_calculate_per_variant_ev() {
         mode: None,
         odds: lucky6_odds,
         rebate_rate: 0.0,
-        effective_mode: EffectiveAmountMode::TotalStake,
+        effective_mode: EffectiveAmountMode::Standard,
     };
 
-    let result = calculate_ev(&standard_cards(), &[spec])
+    let ev = calculate_ev(&standard_cards(), &[spec])
         .expect("aggregate odds spec should calculate per-variant EV");
+    let probabilities = calculate_probabilities(&standard_cards())
+        .expect("standard cards should produce variant probabilities");
+    let lucky6 = &ev[0];
 
-    let lucky6 = &result[0];
-    // P(Two)*12 + P(Three)*20 − P(lose) — must be less than zero (house edge)
-    assert!(lucky6.base_ev < 0.0, "Lucky6 base_ev should be negative");
-    // win_probability must equal the sum of Two + Three variant probabilities
+    let p_two = variant_probability(
+        &probabilities,
+        BetType::Lucky6,
+        BetVariant::Lucky6(Lucky6Variant::Two),
+    );
+    let p_three = variant_probability(
+        &probabilities,
+        BetType::Lucky6,
+        BetVariant::Lucky6(Lucky6Variant::Three),
+    );
+    let expected_win_ev = p_two * default_variant_odds(calculator::BetId::Lucky6Two)
+        + p_three * default_variant_odds(calculator::BetId::Lucky6Three);
+
+    assert_ev_close(lucky6.win_probability, p_two + p_three);
+    assert_eq!(
+        lucky6.push_probability, 0.0,
+        "Lucky6 has no push branch under default odds"
+    );
     assert_ev_close(
-        lucky6.win_probability,
-        source_probability(BetType::Lucky6),
+        lucky6.lose_probability,
+        1.0 - lucky6.win_probability - lucky6.push_probability,
+    );
+    assert_ev_close(lucky6.base_ev, expected_win_ev - lucky6.lose_probability);
+    // The summary odds field for aggregate rows is a probability-weighted
+    // average payout; verify it satisfies the documented identity.
+    assert_ev_close(
+        lucky6.odds * lucky6.win_probability,
+        expected_win_ev,
     );
 }
 
@@ -1182,25 +1213,248 @@ fn ev_aggregate_super_lucky7_matches_per_variant_sum() {
         mode: None,
         odds: super_lucky7_odds,
         rebate_rate: 0.0,
-        effective_mode: EffectiveAmountMode::TotalStake,
+        effective_mode: EffectiveAmountMode::Standard,
     };
 
-    let result = calculate_ev(&standard_cards(), &[spec])
+    let ev = calculate_ev(&standard_cards(), &[spec])
         .expect("SuperLucky7 aggregate EV should calculate");
+    let probabilities = calculate_probabilities(&standard_cards())
+        .expect("standard cards should produce variant probabilities");
+    let slucky7 = &ev[0];
 
-    let slucky7 = &result[0];
-
-    // Manually verified: P(Four)*30 + P(Five)*40 + P(Six)*100 − P(lose) ≈ −0.14834
-    assert_ev_close(slucky7.base_ev, -0.148_342_730_577_21);
-    assert_ev_close(
-        slucky7.win_probability,
-        source_probability(BetType::SuperLucky7),
+    let p_four = variant_probability(
+        &probabilities,
+        BetType::SuperLucky7,
+        BetVariant::SuperLucky7(calculator::SuperLucky7Variant::Four),
     );
-    // Weighted-average odds should be well above the minimum payout of 30
+    let p_five = variant_probability(
+        &probabilities,
+        BetType::SuperLucky7,
+        BetVariant::SuperLucky7(calculator::SuperLucky7Variant::Five),
+    );
+    let p_six = variant_probability(
+        &probabilities,
+        BetType::SuperLucky7,
+        BetVariant::SuperLucky7(calculator::SuperLucky7Variant::Six),
+    );
+    let expected_win_ev = p_four * default_variant_odds(calculator::BetId::SuperLucky7Four)
+        + p_five * default_variant_odds(calculator::BetId::SuperLucky7Five)
+        + p_six * default_variant_odds(calculator::BetId::SuperLucky7Six);
+
+    assert_ev_close(slucky7.win_probability, p_four + p_five + p_six);
+    assert_eq!(slucky7.push_probability, 0.0);
+    assert_ev_close(slucky7.base_ev, expected_win_ev - slucky7.lose_probability);
     assert!(
         slucky7.odds > 30.0,
         "weighted-average odds must exceed the minimum Four-card payout"
     );
+    assert_ev_close(slucky7.odds * slucky7.win_probability, expected_win_ev);
+}
+
+#[test]
+fn ev_aggregate_player_dragon_includes_push_branch() {
+    // PlayerDragon is the most complex aggregate: 7 Net winning variants plus a
+    // Push (Refund) variant. Verify aggregate EV correctly excludes the Push
+    // branch from `win_ev`, surfaces it in `push_probability`, and produces a
+    // breakdown that sums to 1.0.
+    let dragon_odds = default_odds_table()
+        .get(calculator::BetId::PlayerDragonAggregate)
+        .expect("PlayerDragon should have aggregate default odds");
+    let spec = PerBetEvCalculationSpec {
+        id: String::from("player-dragon-aggregate"),
+        bet_type: BetType::PlayerDragon,
+        mode: None,
+        odds: dragon_odds,
+        rebate_rate: 0.0,
+        effective_mode: EffectiveAmountMode::Standard,
+    };
+
+    let ev = calculate_ev(&standard_cards(), &[spec])
+        .expect("PlayerDragon aggregate EV should calculate");
+    let probabilities = calculate_probabilities(&standard_cards())
+        .expect("standard cards should produce variant probabilities");
+    let dragon = &ev[0];
+
+    let net_branches: &[(calculator::BetId, BetVariant)] = &[
+        (
+            calculator::BetId::PlayerDragonNatural,
+            BetVariant::Dragon(DragonVariant::Natural),
+        ),
+        (
+            calculator::BetId::PlayerDragonPoint4,
+            BetVariant::Dragon(DragonVariant::Point4),
+        ),
+        (
+            calculator::BetId::PlayerDragonPoint5,
+            BetVariant::Dragon(DragonVariant::Point5),
+        ),
+        (
+            calculator::BetId::PlayerDragonPoint6,
+            BetVariant::Dragon(DragonVariant::Point6),
+        ),
+        (
+            calculator::BetId::PlayerDragonPoint7,
+            BetVariant::Dragon(DragonVariant::Point7),
+        ),
+        (
+            calculator::BetId::PlayerDragonPoint8,
+            BetVariant::Dragon(DragonVariant::Point8),
+        ),
+        (
+            calculator::BetId::PlayerDragonPoint9,
+            BetVariant::Dragon(DragonVariant::Point9),
+        ),
+    ];
+
+    let expected_win_probability: f64 = net_branches
+        .iter()
+        .map(|(_, variant)| variant_probability(&probabilities, BetType::PlayerDragon, *variant))
+        .sum();
+    let expected_push_probability = variant_probability(
+        &probabilities,
+        BetType::PlayerDragon,
+        BetVariant::Dragon(DragonVariant::Push),
+    );
+    let expected_win_ev: f64 = net_branches
+        .iter()
+        .map(|(child_id, variant)| {
+            variant_probability(&probabilities, BetType::PlayerDragon, *variant)
+                * default_variant_odds(*child_id)
+        })
+        .sum();
+
+    assert_ev_close(dragon.win_probability, expected_win_probability);
+    assert_ev_close(dragon.push_probability, expected_push_probability);
+    assert_ev_close(
+        dragon.lose_probability,
+        1.0 - dragon.win_probability - dragon.push_probability,
+    );
+    assert_ev_close(dragon.base_ev, expected_win_ev - dragon.lose_probability);
+    assert_ev_close(dragon.odds * dragon.win_probability, expected_win_ev);
+    assert!(
+        dragon.push_probability > 0.0,
+        "PlayerDragon must report a positive push probability"
+    );
+}
+
+#[test]
+fn ev_aggregate_rejects_missing_variant() {
+    // Drop the Six child to simulate a caller that supplies an incomplete
+    // aggregate odds list. The calculator must refuse instead of silently
+    // folding the missing variant into `lose_probability`.
+    let truncated_children = vec![
+        calculator::VariantOddsSpec {
+            bet_id: calculator::BetId::SuperLucky7Four,
+            variant: BetVariant::SuperLucky7(calculator::SuperLucky7Variant::Four),
+            odds: 30.0,
+            settlement: calculator::OddsSettlement::Net,
+        },
+        calculator::VariantOddsSpec {
+            bet_id: calculator::BetId::SuperLucky7Five,
+            variant: BetVariant::SuperLucky7(calculator::SuperLucky7Variant::Five),
+            odds: 40.0,
+            settlement: calculator::OddsSettlement::Net,
+        },
+    ];
+    let spec = PerBetEvCalculationSpec {
+        id: String::from("super-lucky7-missing-six"),
+        bet_type: BetType::SuperLucky7,
+        mode: None,
+        odds: OddsSpec::aggregate_owned(
+            calculator::BetId::SuperLucky7Aggregate,
+            truncated_children,
+        ),
+        rebate_rate: 0.0,
+        effective_mode: EffectiveAmountMode::Standard,
+    };
+
+    let error = calculate_ev(&standard_cards(), &[spec])
+        .expect_err("missing aggregate child must produce an error");
+    assert!(
+        error.contains("missing variant"),
+        "error should mention the missing variant: {error}"
+    );
+}
+
+#[test]
+fn ev_aggregate_rejects_unknown_variant() {
+    // Add a synthetic SuperLucky7 child that the calculator does not produce
+    // (e.g. a hypothetical seven-card branch). Strict completeness ensures the
+    // calculator surfaces the mismatch instead of silently ignoring it.
+    let default_children = match default_odds_table()
+        .get(calculator::BetId::SuperLucky7Aggregate)
+        .expect("SuperLucky7 default aggregate odds")
+    {
+        OddsSpec::Aggregate(spec) => spec.children.to_vec(),
+        _ => panic!("expected aggregate spec"),
+    };
+    let mut extended_children = default_children;
+    extended_children.push(calculator::VariantOddsSpec {
+        bet_id: calculator::BetId::SuperLucky7Four,
+        // Reuse the Heaven9 variant tag to force a mismatch with SuperLucky7
+        // variants, simulating an out-of-scope child entry.
+        variant: BetVariant::Heaven9(calculator::Heaven9Variant::Single),
+        odds: 200.0,
+        settlement: calculator::OddsSettlement::Net,
+    });
+    let spec = PerBetEvCalculationSpec {
+        id: String::from("super-lucky7-unknown-child"),
+        bet_type: BetType::SuperLucky7,
+        mode: None,
+        odds: OddsSpec::aggregate_owned(
+            calculator::BetId::SuperLucky7Aggregate,
+            extended_children,
+        ),
+        rebate_rate: 0.0,
+        effective_mode: EffectiveAmountMode::Standard,
+    };
+
+    let error = calculate_ev(&standard_cards(), &[spec])
+        .expect_err("unknown aggregate child must produce an error");
+    assert!(
+        error.contains("does not match any calculator variant"),
+        "error should explain the variant mismatch: {error}"
+    );
+}
+
+#[test]
+fn ev_aggregate_super_lucky7_stays_finite_on_depleted_shoe() {
+    // Aggregate `odds` is `(base_ev + lose) / win_probability`; for very small
+    // win probabilities it could amplify rounding error or divide by zero.
+    // Use the depleted-shoe fixture to confirm the value stays finite and
+    // satisfies the documented identity.
+    let cards = fixture_cards(&DEPLETED_SHOE_FIXTURE.ranks);
+    let super_lucky7_odds = default_odds_table()
+        .get(calculator::BetId::SuperLucky7Aggregate)
+        .expect("SuperLucky7 default aggregate odds");
+    let spec = PerBetEvCalculationSpec {
+        id: String::from("super-lucky7-depleted"),
+        bet_type: BetType::SuperLucky7,
+        mode: None,
+        odds: super_lucky7_odds,
+        rebate_rate: 0.0,
+        effective_mode: EffectiveAmountMode::Standard,
+    };
+
+    let result =
+        calculate_ev(&cards, &[spec]).expect("depleted shoe should calculate aggregate EV");
+    let slucky7 = &result[0];
+
+    assert!(slucky7.base_ev.is_finite(), "base_ev must remain finite");
+    assert!(slucky7.odds.is_finite(), "weighted odds must remain finite");
+    assert!(
+        slucky7.win_probability >= 0.0 && slucky7.win_probability <= 1.0,
+        "win_probability must lie in [0, 1]"
+    );
+    if slucky7.win_probability > 0.0 {
+        assert_ev_close(
+            slucky7.odds * slucky7.win_probability,
+            slucky7.base_ev + slucky7.lose_probability,
+        );
+    } else {
+        // Zero win probability collapses the weighted-odds summary to 0.
+        assert_eq!(slucky7.odds, 0.0);
+    }
 }
 
 #[test]
